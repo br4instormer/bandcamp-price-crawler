@@ -5,18 +5,10 @@ const queue = require("async/queue");
 const cheerio = require("cheerio");
 const axios = require("axios");
 const argv = require("./argv.js");
+const { Cost, State } = require("./cost.js");
 const options = require("./options.json");
+const Count = require("./count.js");
 
-const State = {
-  "NOT_ABLE_TO_DOWNLOAD": 1,
-  "FREE_DOWNLOAD": 2,
-  "NAME_YOUR_PRICE": 3,
-};
-const Message = {
-  [State.NOT_ABLE_TO_DOWNLOAD]: "Not available to download",
-  [State.FREE_DOWNLOAD]: "Free download",
-  [State.NAME_YOUR_PRICE]: "Name your price",
-};
 const clientOptions = {
   ...options,
   httpAgent: new http.Agent({ keepAlive: true }),
@@ -29,17 +21,20 @@ const URL_FILEPATH = argv.include;
 const println = (cost, url) => console.log(`[${cost}] ${url}`);
 const parseArray = (string) => string.split("\n");
 const readUrlFile = async (filename) => readFile(filename, { encoding: "utf8" });
-const printCost = async ({ client, url }) => {
+const printCost = async ({ client, url, count }) => {
   const cost = getCost(cheerio.load(await getBody(client, url)));
-  const isFree = cost === Message.FREE_DOWNLOAD;
+  const isFree = cost.isFree();
+
+  count.add(cost.state);
 
   if (!SHOW_ONLY_FREE) {
-    println(cost, url);
+    println(cost.price, url);
+
     return;
   }
   
   if (isFree) {
-    println(cost, url);
+    println(cost.price, url);
   }
 };
 const getBody = async (client, url) => client.get(url).then(({ data }) => data);
@@ -54,33 +49,39 @@ function getCost($) {
   const isNameYourPrice = parseNameYourPrice($);
 
   if (!hasDigitalDownload) {
-    return Message[State.NOT_ABLE_TO_DOWNLOAD];
+    return new Cost(State.NOT_ABLE_TO_DOWNLOAD)
   }
 
   if (isFreeDownload) {
-    return Message[State.FREE_DOWNLOAD];
+    return new Cost(State.FREE_DOWNLOAD);
   }
 
   if (isNameYourPrice) {
-    return Message[State.NAME_YOUR_PRICE];
+    return Cost(State.NAME_YOUR_PRICE);
   }
 
-  return parseCostDownload($);
+  return new Cost(State.REGULAR_DOWNLOAD, parseCostDownload($));
 }
 
 async function main(
   urlfile,
   client,
   q,
+  count,
 ) {
   parseArray(await urlfile)
-    .forEach((url) => q.push({ client, url }));
+    .forEach((url) => q.push({ client, url, count }));
 
   await q.drain();
+
+  if (SHOW_ONLY_FREE && !count.get(State.FREE_DOWNLOAD)) {
+    console.warn("No free download albums at all!");
+  }
 }
 
 main(
   readUrlFile(URL_FILEPATH),
   axios.create(clientOptions),
   queue(printCost, MAX_CONCURENT_DOWNLOADS),
+  new Count,
 );
