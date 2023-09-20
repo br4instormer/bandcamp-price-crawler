@@ -4,7 +4,7 @@ The application visits pages given in `urls.txt` to find price of product and pr
 
 ## Install & Using
 
-Node.js v18.16
+Node.js v20.7
 
 ### Install
 
