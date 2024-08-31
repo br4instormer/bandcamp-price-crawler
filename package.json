@@ -8,7 +8,11 @@
   "license": "MIT",
   "scripts": {
     "start": "node .",
-    "help": "node . --help"
+    "help": "node . --help",
+    "format:check": "prettier --check './*.js'",
+    "format": "prettier --write './*.js'",
+    "lint:check": "eslint --ext .js --ignore-path .gitignore .",
+    "lint": "eslint --fix --ext .js --ignore-path .gitignore ."
   },
   "engines": {
     "node": "~20.15"
@@ -18,5 +22,14 @@
     "axios": "^1.7.6",
     "cheerio": "^1.0.0",
     "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "~20.15",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-config-standard": "^17.1.0",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-prettier": "^5.2.1",
+    "prettier": "^3.3.3"
   }
 }
