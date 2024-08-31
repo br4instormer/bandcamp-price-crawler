@@ -1,4 +1,5 @@
 const { readFile } = require("node:fs/promises");
+const { setTimeout: sleep } = require("node:timers/promises");
 const http = require("node:http");
 const https = require("node:https");
 const queue = require("async/queue");
@@ -30,12 +31,16 @@ const printCost = async ({ client, url, count }) => {
   if (!SHOW_ONLY_FREE) {
     println(cost.price, url);
 
+    await sleep(500);
+
     return;
   }
   
   if (isFree) {
     println(cost.price, url);
   }
+
+  await sleep(500);
 };
 const getBody = async (client, url) => client.get(url).then(({ data }) => data);
 const parseDigitalDownload = ($) => $(".buyItem.digital").get(0) !== undefined;
@@ -57,7 +62,7 @@ function getCost($) {
   }
 
   if (isNameYourPrice) {
-    return Cost(State.NAME_YOUR_PRICE);
+    return new Cost(State.NAME_YOUR_PRICE);
   }
 
   return new Cost(State.REGULAR_DOWNLOAD, parseCostDownload($));
