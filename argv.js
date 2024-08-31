@@ -6,13 +6,13 @@ module.exports = require("yargs")
   .usage("npm start -- -i some/path/urls.txt")
   .usage("npm start -- -f")
   .options({
-    "include": {
+    include: {
       alias: "i",
       default: join(__dirname, URL_FILENAME),
       description: "File contains bandcamp urls",
       type: "string",
     },
-    "free": {
+    free: {
       alias: "f",
       default: false,
       description: "Show only free download albums",
@@ -20,5 +20,4 @@ module.exports = require("yargs")
     },
   })
   .version(false)
-  .help("help")
-  .argv;
+  .help("help").argv;

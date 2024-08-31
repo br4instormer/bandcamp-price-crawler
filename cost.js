@@ -18,10 +18,10 @@ class Cost {
 }
 
 const State = {
-  "NOT_ABLE_TO_DOWNLOAD": 1,
-  "FREE_DOWNLOAD": 2,
-  "NAME_YOUR_PRICE": 3,
-  "REGULAR_DOWNLOAD": 4,
+  NOT_ABLE_TO_DOWNLOAD: 1,
+  FREE_DOWNLOAD: 2,
+  NAME_YOUR_PRICE: 3,
+  REGULAR_DOWNLOAD: 4,
 };
 
 const Message = {
@@ -34,4 +34,4 @@ module.exports = {
   Cost,
   State,
   Message,
-}
+};

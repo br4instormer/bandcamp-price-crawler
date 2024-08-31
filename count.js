@@ -2,7 +2,10 @@ const { State } = require("./cost.js");
 
 class Count {
   constructor() {
-    this._items = Object.values(State).reduce((result, item) => (result[item] = 0, result), {});
+    this._items = Object.values(State).reduce(
+      (result, item) => ((result[item] = 0), result),
+      {},
+    );
   }
 
   add(state) {

@@ -21,7 +21,8 @@ const URL_FILEPATH = argv.include;
 
 const println = (cost, url) => console.log(`[${cost}] ${url}`);
 const parseArray = (string) => string.split("\n");
-const readUrlFile = async (filename) => readFile(filename, { encoding: "utf8" });
+const readUrlFile = async (filename) =>
+  readFile(filename, { encoding: "utf8" });
 const printCost = async ({ client, url, count }) => {
   const cost = getCost(cheerio.load(await getBody(client, url)));
   const isFree = cost.isFree();
@@ -35,7 +36,7 @@ const printCost = async ({ client, url, count }) => {
 
     return;
   }
-  
+
   if (isFree) {
     println(cost.price, url);
   }
@@ -44,9 +45,13 @@ const printCost = async ({ client, url, count }) => {
 };
 const getBody = async (client, url) => client.get(url).then(({ data }) => data);
 const parseDigitalDownload = ($) => $(".buyItem.digital").get(0) !== undefined;
-const parseFreeDownload = ($) => $(".buyItem.digital .compound-button .download-link").text().trim() === "Free Download";
-const parseNameYourPrice = ($) => $(".buyItem.digital .buyItemNyp").text().trim() === "name your price";
-const parseCostDownload = ($) => $(".buyItem.digital .nobreak").find(".base-text-color").text().trim();
+const parseFreeDownload = ($) =>
+  $(".buyItem.digital .compound-button .download-link").text().trim() ===
+  "Free Download";
+const parseNameYourPrice = ($) =>
+  $(".buyItem.digital .buyItemNyp").text().trim() === "name your price";
+const parseCostDownload = ($) =>
+  $(".buyItem.digital .nobreak").find(".base-text-color").text().trim();
 
 function getCost($) {
   const hasDigitalDownload = parseDigitalDownload($);
@@ -54,7 +59,7 @@ function getCost($) {
   const isNameYourPrice = parseNameYourPrice($);
 
   if (!hasDigitalDownload) {
-    return new Cost(State.NOT_ABLE_TO_DOWNLOAD)
+    return new Cost(State.NOT_ABLE_TO_DOWNLOAD);
   }
 
   if (isFreeDownload) {
@@ -68,14 +73,8 @@ function getCost($) {
   return new Cost(State.REGULAR_DOWNLOAD, parseCostDownload($));
 }
 
-async function main(
-  urlfile,
-  client,
-  q,
-  count,
-) {
-  parseArray(await urlfile)
-    .forEach((url) => q.push({ client, url, count }));
+async function main(urlfile, client, q, count) {
+  parseArray(await urlfile).forEach((url) => q.push({ client, url, count }));
 
   await q.drain();
 
@@ -88,5 +87,5 @@ main(
   readUrlFile(URL_FILEPATH),
   axios.create(clientOptions),
   queue(printCost, MAX_CONCURENT_DOWNLOADS),
-  new Count,
+  new Count(),
 );
