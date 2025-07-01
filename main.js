@@ -20,7 +20,7 @@ const SHOW_ONLY_FREE = argv.free;
 const URL_FILEPATH = argv.include;
 
 const println = (cost, url) => console.log(`[${cost}] ${url}`);
-const parseArray = (string) => string.split("\n");
+const parseArray = (string) => string.split("\n").filter(Boolean);
 const readUrlFile = async (filename) =>
   readFile(filename, { encoding: "utf8" });
 const printCost = async ({ client, url, count }) => {
