@@ -5,6 +5,7 @@ const https = require("node:https");
 const queue = require("async/queue");
 const cheerio = require("cheerio");
 const axios = require("axios");
+const { HTTPError } = require("./errors/http_error");
 const argv = require("./argv.js");
 const { Cost, State } = require("./cost.js");
 const options = require("./options.json");
@@ -20,11 +21,29 @@ const SHOW_ONLY_FREE = argv.free;
 const URL_FILEPATH = argv.include;
 
 const println = (cost, url) => console.log(`[${cost}] ${url}`);
-const parseArray = (string) => string.split("\n");
+const parseArray = (string) => string.split("\n").filter(Boolean);
 const readUrlFile = async (filename) =>
   readFile(filename, { encoding: "utf8" });
-const printCost = async ({ client, url, count }) => {
-  const cost = getCost(cheerio.load(await getBody(client, url)));
+const printCost = async (payload) => {
+  const { client, url, count, q } = payload;
+  const result = await getBody(client, url);
+
+  if (result instanceof HTTPError) {
+    if (result.code === 429) {
+      await sleep(5_000);
+      q.push(payload);
+    }
+
+    return;
+  }
+
+  if (result instanceof Error) {
+    console.warn(`Cannot get ${url} because of ${result.message}`);
+
+    return;
+  }
+
+  const cost = getCost(cheerio.load(result));
   const isFree = cost.isFree();
 
   count.add(cost.state);
@@ -43,7 +62,15 @@ const printCost = async ({ client, url, count }) => {
 
   await sleep(500);
 };
-const getBody = async (client, url) => client.get(url).then(({ data }) => data);
+const getBody = async (client, url) =>
+  client
+    .get(url)
+    .then(({ data }) => data)
+    .catch((error) =>
+      error?.response
+        ? new HTTPError(error.response.statusText, error.response.status)
+        : error,
+    );
 const parseDigitalDownload = ($) => $(".buyItem.digital").get(0) !== undefined;
 const parseFreeDownload = ($) =>
   $(".buyItem.digital .compound-button .download-link").text().trim() ===
@@ -74,7 +101,7 @@ function getCost($) {
 }
 
 async function main(urlfile, client, q, count) {
-  parseArray(await urlfile).forEach((url) => q.push({ client, url, count }));
+  parseArray(await urlfile).forEach((url) => q.push({ client, url, count, q }));
 
   await q.drain();
 
