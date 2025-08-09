@@ -1,2 +1,7 @@
 node_modules
+dist
+
 urls.txt
+.env
+.env.*
+!.env.example
