@@ -10,8 +10,8 @@ Node.js v22.15
 
 ```bash
 pnpm i
-pnpm prune --prod
 pnpm build
+pnpm prune --prod
 
 cp .env.example .env
 ```
