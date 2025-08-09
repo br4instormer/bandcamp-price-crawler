@@ -3,5 +3,5 @@
   "semi": true,
   "bracketSpacing": true,
   "endOfLine": "auto",
-  "printWidth": 80
+  "printWidth": 100
 }

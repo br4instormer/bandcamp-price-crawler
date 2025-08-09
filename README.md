@@ -4,23 +4,27 @@ The application visits pages given in `urls.txt` to find price of product and pr
 
 ## Install & Using
 
-Node.js v20.15
+Node.js v22.15
 
 ### Install
 
 ```bash
-npm i
+pnpm i
+pnpm prune --prod
+pnpm build
+
+cp .env.example .env
 ```
 
 ### Using
 
 ```bash
-npm run help
+pnpm run help
 ```
 
 ```bash
-npm start -- -i some/path/urls.txt
-npm start -- -f
+pnpm start -- -i some/path/urls.txt
+pnpm start -- -f
 
 Options:
   -i, --include  File contains bandcamp urls                  [string] [default:

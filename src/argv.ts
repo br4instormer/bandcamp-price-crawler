@@ -1,14 +1,14 @@
-const { join } = require("node:path");
+import { join, dirname } from "node:path";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
 
-const URL_FILENAME = "urls.txt";
-
-module.exports = require("yargs")
+export default yargs(hideBin(process.argv))
   .usage("npm start -- -i some/path/urls.txt")
   .usage("npm start -- -f")
   .options({
     include: {
       alias: "i",
-      default: join(__dirname, URL_FILENAME),
+      default: join(dirname(""), "urls.txt"),
       description: "File contains bandcamp urls",
       type: "string",
     },
@@ -20,4 +20,5 @@ module.exports = require("yargs")
     },
   })
   .version(false)
-  .help("help").argv;
+  .help("help")
+  .parseSync();
