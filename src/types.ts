@@ -6,6 +6,7 @@ export interface QPayload {
   client: AxiosInstance;
   url: string;
   count: Count;
+  timeout: number;
 }
 
 export type Queue = QueueObject<QPayload>;
