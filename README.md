@@ -16,6 +16,16 @@ pnpm prune --prod
 cp .env.example .env
 ```
 
+### Configure
+
+`.env`:
+
+`CONCURENT_DOWNLOADS=5` run 5 concurent threads
+
+`DELAY_MIN=300` lower limit of delay between requests
+
+`DELAY_MAX=700` upper limit of delay between requests
+
 ### Using
 
 ```bash
