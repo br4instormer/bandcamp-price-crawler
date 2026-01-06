@@ -9,6 +9,14 @@ export const parseNameYourPrice = ($: CheerioAPI): boolean =>
   $(".buyItem.digital .buyItemNyp").text().trim() === "name your price";
 export const parseCostDownload = ($: CheerioAPI): string =>
   $(".buyItem.digital .nobreak").find(".base-text-color").text().trim();
+export const hasCurrencySign = (s: string): boolean => !/^[0-9.]+$/.test(s);
+export const parseCurrencyCode = ($: CheerioAPI): string | undefined =>
+  $($(".buyItem.digital .nobreak .secondaryText").get(0))?.text().trim();
+export const parseCostWCurrency = ($: CheerioAPI): string => {
+  const cost = parseCostDownload($);
+
+  return hasCurrencySign(cost) ? cost : `${cost} ${parseCurrencyCode($) ?? ""}`;
+};
 
 export function parseCost($: CheerioAPI): Cost {
   const hasDigitalDownload = parseDigitalDownload($);
@@ -27,5 +35,5 @@ export function parseCost($: CheerioAPI): Cost {
     return new Cost(State.NAME_YOUR_PRICE);
   }
 
-  return new Cost(State.REGULAR_DOWNLOAD, parseCostDownload($));
+  return new Cost(State.REGULAR_DOWNLOAD, parseCostWCurrency($));
 }
