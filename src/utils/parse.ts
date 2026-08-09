@@ -1,18 +1,17 @@
 import { type CheerioAPI } from "cheerio";
 import { Cost, State } from "../cost";
 
-export const parseDigitalDownload = ($: CheerioAPI): boolean =>
-  $(".buyItem.digital").get(0) !== undefined;
-export const parseFreeDownload = ($: CheerioAPI): boolean =>
+const parseDigitalDownload = ($: CheerioAPI): boolean => $(".buyItem.digital").get(0) !== undefined;
+const parseFreeDownload = ($: CheerioAPI): boolean =>
   $(".buyItem.digital .compound-button .download-link").text().trim() === "Free Download";
-export const parseNameYourPrice = ($: CheerioAPI): boolean =>
+const parseNameYourPrice = ($: CheerioAPI): boolean =>
   $(".buyItem.digital .buyItemNyp").text().trim() === "name your price";
-export const parseCostDownload = ($: CheerioAPI): string =>
+const parseCostDownload = ($: CheerioAPI): string =>
   $(".buyItem.digital .nobreak").find(".base-text-color").text().trim();
-export const hasCurrencySign = (s: string): boolean => !/^[0-9.]+$/.test(s);
-export const parseCurrencyCode = ($: CheerioAPI): string | undefined =>
+const hasCurrencySign = (s: string): boolean => !/^[0-9.]+$/.test(s);
+const parseCurrencyCode = ($: CheerioAPI): string | undefined =>
   $($(".buyItem.digital .nobreak .secondaryText").get(0))?.text().trim();
-export const parseCostWCurrency = ($: CheerioAPI): string => {
+const parseCostWCurrency = ($: CheerioAPI): string => {
   const cost = parseCostDownload($);
 
   return hasCurrencySign(cost) ? cost : `${cost} ${parseCurrencyCode($) ?? ""}`;

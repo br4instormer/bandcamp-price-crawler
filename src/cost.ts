@@ -27,7 +27,7 @@ export const enum State {
   REGULAR_DOWNLOAD,
 }
 
-export const Message: Record<State, string> = {
+const Message: Record<State, string> = {
   [State.NOT_ABLE_TO_DOWNLOAD]: "Not available to download",
   [State.FREE_DOWNLOAD]: "Free download",
   [State.NAME_YOUR_PRICE]: "Name your price",
