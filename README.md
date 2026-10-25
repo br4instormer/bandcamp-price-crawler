@@ -1,44 +1,53 @@
-# Bandcamp price crawler
+# Bandcamp price crawler (Go)
 
-The application visits pages given in `urls.txt` to find price of product and print to stdout
+The application visits pages given in `urls.txt` to find price of product and print to stdout.
+
+Go port of the original TypeScript crawler: worker-pool queue, in-flight request limiter, random pauses before requests and exponential backoff with 429 handling.
 
 ## Install & Using
 
-Node.js v22.15
+Go 1.27
 
-### Install
+### Build
 
 ```bash
-pnpm i
-pnpm build
-pnpm prune --prod
-
-cp .env.example .env
+make build        # builds bin/crawler
+make test         # unit tests
+make race         # unit tests with the race detector
+make coverage     # tests + coverage.out
 ```
 
 ### Configure
 
-`.env`:
+Parameters are read from the environment; an optional `.env` file is loaded first (real environment variables always win). See `.env.example`:
 
-`CONCURENT_DOWNLOADS=5` run 5 concurent threads
+| Variable | Default | Meaning |
+|---|---|---|
+| `CONCURENT_DOWNLOADS` | `5` | Queue worker pool size |
+| `DELAY_MIN` / `DELAY_MAX` | `300` / `700` | Bounds (ms) of the random pause before each request |
+| `MAX_CONCURRENT_REQUESTS` | = workers | Cap on simultaneous HTTP requests |
+| `RETRIES` | `50` | Retries for 429 / 5xx / network errors |
+| `RETRY_BASE_DELAY_MS` / `RETRY_MAX_DELAY_MS` | `1000` / `60000` | Exponential retry delay bounds |
+| `HTTP_TIMEOUT_MS` | `30000` | Per-request timeout |
+| `USER_AGENT` | Chrome-ish UA | `User-Agent` header |
+| `VERBOSE` | off | `1` enables debug logging |
 
-`DELAY_MIN=300` lower limit of delay between requests
-
-`DELAY_MAX=700` upper limit of delay between requests
+On HTTP 429 the retry pause grows exponentially (`RETRY_BASE_DELAY_MS * 2^attempt`, ±20% jitter, capped by `RETRY_MAX_DELAY_MS`, a larger `Retry-After` header wins) and the global pause multiplier doubles, so the pauses between all requests widen until the server recovers.
 
 ### Using
 
 ```bash
-pnpm run help
+make run ARGS="-i some/path/urls.txt"
+make run ARGS="-f"     # show only free download albums
+./bin/crawler --help
 ```
 
-```bash
-pnpm start -- -i some/path/urls.txt
-pnpm start -- -f
+## SonarQube
 
-Options:
-  -i, --include  File contains bandcamp urls                  [string] [default:
-             "/home/user/bandcamp-price-crawler/urls.txt"]
-  -f, --free     Show only free download albums       [boolean] [default: false]
-      --help     Show help                                             [boolean]
+The analysis is sent through `sonar-scanner` running in Docker (requires a reachable SonarQube server and a token with "Execute Analysis" permission):
+
+```bash
+export SONAR_HOST_URL=https://sonar.example.com
+export SONAR_TOKEN=your-token
+make sonar           # runs tests with coverage, then the scanner
 ```
