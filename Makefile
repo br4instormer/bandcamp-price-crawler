@@ -22,7 +22,11 @@ coverage:
 	go tool cover -func=coverage.out
 
 sonar: coverage
-	./scripts/sonar-scan.sh
+	docker run --rm --network host \
+		-v $$(pwd):/usr/src \
+		--name sonarqube-bandcamp-price-crawler \
+		--env-file=.env \
+		sonarsource/sonar-scanner-cli
 
 clean:
 	rm -rf bin coverage.out
