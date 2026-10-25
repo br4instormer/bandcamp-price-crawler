@@ -1,4 +1,5 @@
 BIN := bin/crawler
+COVERAGE_DIR := coverage
 
 .PHONY: build run test race vet coverage sonar clean
 
@@ -18,8 +19,10 @@ vet:
 	go vet ./...
 
 coverage:
-	go test ./... -race -coverprofile=coverage.out -count=1
-	go tool cover -func=coverage.out
+	mkdir -p $(COVERAGE_DIR)
+	go test ./... -race -coverprofile=$(COVERAGE_DIR)/coverage.out -count=1
+	go tool cover -func=$(COVERAGE_DIR)/coverage.out
+	go tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
 
 sonar: coverage
 	docker run --rm --network host \
@@ -29,4 +32,4 @@ sonar: coverage
 		sonarsource/sonar-scanner-cli
 
 clean:
-	rm -rf bin coverage.out
+	rm -rf bin $(COVERAGE_DIR)

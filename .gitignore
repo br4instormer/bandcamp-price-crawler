@@ -1,5 +1,5 @@
 bin
-coverage.out
+coverage/
 .zcode
 
 urls.txt
