@@ -13,6 +13,7 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/htmlparser"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/httpclient"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/limiter"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/progress"
 )
 
 // Options wires together the collaborators of the queue.
@@ -26,6 +27,7 @@ type Options struct {
 	Throttle *backoff.Throttle
 	Counter  *counter.Counter
 	Log      *slog.Logger
+	Progress *progress.UI // may be nil
 }
 
 // Run feeds urls into a worker pool of opts.Workers goroutines and returns
@@ -57,30 +59,38 @@ feed:
 }
 
 // process handles one url end to end: pause, in-flight slot, fetch, parse,
-// statistics and output.
+// statistics and output. Every dequeued url counts as processed, whatever
+// the outcome; only parsed results get a dashboard row.
 func (o Options) process(ctx context.Context, url string) {
 	if err := o.pause(ctx); err != nil {
+		o.Progress.Inc()
 		return
 	}
 	if err := o.Limiter.Acquire(ctx); err != nil {
+		o.Progress.Inc()
 		return
 	}
 	body, err := o.Client.Fetch(ctx, url)
 	o.Limiter.Release()
 	if err != nil {
 		o.Log.Warn("Cannot get " + url + " because of " + err.Error())
+		o.Progress.Inc()
 		return
 	}
 
 	parsed, err := htmlparser.ParseCost(string(body))
 	if err != nil {
 		o.Log.Warn("Cannot parse " + url + " because of " + err.Error())
+		o.Progress.Inc()
 		return
 	}
 
 	o.Counter.Add(parsed.State)
 	if parsed.IsFree() || !o.OnlyFree {
+		o.Progress.Done(url, parsed.Price)
 		o.Log.Info("[" + parsed.Price + "] " + url)
+	} else {
+		o.Progress.Inc()
 	}
 }
 

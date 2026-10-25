@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/br4instormer/bandcamp-price-crawler/internal/backoff"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/config"
@@ -18,7 +19,10 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/httpclient"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/limiter"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/logger"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/progress"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/queue"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -35,19 +39,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log := logger.New(os.Stdout, cfg.Verbose)
 
 	urls, err := readURLs(cli.include)
 	if err != nil {
 		return err
 	}
-	if len(urls) == 0 {
-		log.Warn("No urls found in " + cli.include)
-		return nil
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// While the dashboard is live the logger must write through it
+	// (progress.UI.LogWriter) instead of stdout; ctrl+c in the dashboard
+	// cancels ctx via WithCancel.
+	ui := progress.New(cfg.Progress, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), len(urls), progress.WithCancel(stop))
+	log := logger.New(ui.LogWriter(), cfg.LogLevel)
+
+	if len(urls) == 0 {
+		log.Warn("No urls found in " + cli.include)
+		ui.Stop()
+		return nil
+	}
 
 	throttle := backoff.NewThrottle(backoff.MaxMultiplier)
 	cnt := &counter.Counter{}
@@ -61,11 +72,16 @@ func run() error {
 		Throttle: throttle,
 		Counter:  cnt,
 		Log:      log,
+		Progress: ui,
 	})
 
 	if cli.free && cnt.Get(cost.FreeDownload) == 0 {
 		log.Warn("No free download albums at all!")
 	}
+
+	processed := ui.Processed()
+	ui.Stop()
+	log.Info(fmt.Sprintf("Processed %d/%d urls in %s", processed, len(urls), ui.Elapsed().Round(time.Second)))
 	return nil
 }
 

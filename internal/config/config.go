@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,14 @@ import (
 // DefaultUserAgent is the browser signature used for requests when the
 // USER_AGENT variable is not set.
 const DefaultUserAgent = "Mozilla/5.0 (X11; Datanyze; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36"
+
+// PROGRESS modes: the live task table turns on automatically in a terminal,
+// or can be forced on or off.
+const (
+	ProgressAuto = "auto"
+	ProgressOn   = "on"
+	ProgressOff  = "off"
+)
 
 // Config holds every tunable of the crawler. Each field comes from an
 // environment variable and falls back to a sane default.
@@ -36,8 +45,10 @@ type Config struct {
 	HTTPTimeout time.Duration
 	// UserAgent is sent with every request (USER_AGENT).
 	UserAgent string
-	// Verbose enables debug logging (VERBOSE=1).
-	Verbose bool
+	// LogLevel is the minimum log level (LOG_LEVEL: debug|info|warn|error).
+	LogLevel slog.Level
+	// Progress controls the live task table (PROGRESS: auto|on|off).
+	Progress string
 }
 
 // Load reads optional .env files (real environment variables win) and builds
@@ -55,7 +66,8 @@ func Load() (*Config, error) {
 		RetryMaxDelay:  envDuration("RETRY_MAX_DELAY_MS", time.Minute),
 		HTTPTimeout:    envDuration("HTTP_TIMEOUT_MS", 30*time.Second),
 		UserAgent:      envStr("USER_AGENT", DefaultUserAgent),
-		Verbose:        os.Getenv("VERBOSE") == "1",
+		LogLevel:       envLevel("LOG_LEVEL", slog.LevelInfo),
+		Progress:       envStr("PROGRESS", ProgressAuto),
 	}
 	cfg.MaxConcurrentRequests = envInt("MAX_CONCURRENT_REQUESTS", cfg.Workers)
 
@@ -81,6 +93,8 @@ func (c *Config) validate() error {
 		return errors.New("HTTP_TIMEOUT_MS must be positive")
 	case c.UserAgent == "":
 		return errors.New("USER_AGENT must not be empty")
+	case c.Progress != ProgressAuto && c.Progress != ProgressOn && c.Progress != ProgressOff:
+		return fmt.Errorf("PROGRESS must be %s, %s or %s, got %q", ProgressAuto, ProgressOn, ProgressOff, c.Progress)
 	}
 	return nil
 }
@@ -118,4 +132,19 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(n) * time.Millisecond
+}
+
+// envLevel parses a slog level name (DEBUG, INFO, WARN, ERROR, any case)
+// via slog's own UnmarshalText.
+func envLevel(key string, def slog.Level) slog.Level {
+	s, ok := os.LookupEnv(key)
+	if !ok || s == "" {
+		return def
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(s)); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid %s=%q, using default %s\n", key, s, def)
+		return def
+	}
+	return level
 }

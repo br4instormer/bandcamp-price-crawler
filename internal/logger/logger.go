@@ -1,5 +1,5 @@
 // Package logger provides a leveled logger with the compact
-// "15:04:05 LEVEL message" format of the TypeScript original.
+// "15:04:05 LEVEL message key=value" format of the TypeScript original.
 package logger
 
 import (
@@ -7,16 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
-// New builds a slog logger writing HH:MM:SS LEVEL records to w. Verbose mode
-// lowers the level from info to debug (VERBOSE=1 parity).
-func New(w io.Writer, verbose bool) *slog.Logger {
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
+// New builds a slog logger writing HH:MM:SS LEVEL records to w, filtering
+// out records below level (LOG_LEVEL=debug|info|warn|error).
+func New(w io.Writer, level slog.Level) *slog.Logger {
 	return slog.New(&plainHandler{w: w, level: level})
 }
 
@@ -34,11 +31,24 @@ func (h *plainHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	_, err := fmt.Fprintf(h.w, "%s %-5s %s\n",
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %-5s %s",
 		r.Time.Format("15:04:05"),
 		levelName(r.Level),
 		r.Message,
 	)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Equal(slog.Attr{}) {
+			return true
+		}
+		fmt.Fprintf(&b, " %s=%v", a.Key, a.Value)
+		return true
+	})
+	b.WriteByte('\n')
+
+	// One Write per record keeps whole lines intact when the writer is a
+	// live-rendered progress table.
+	_, err := io.WriteString(h.w, b.String())
 	return err
 }
 

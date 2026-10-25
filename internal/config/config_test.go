@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -32,8 +33,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.UserAgent != DefaultUserAgent {
 		t.Errorf("UserAgent = %q, want default", cfg.UserAgent)
 	}
-	if cfg.Verbose {
-		t.Error("Verbose = true, want false")
+	if cfg.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel = %v, want INFO", cfg.LogLevel)
+	}
+	if cfg.Progress != ProgressAuto {
+		t.Errorf("Progress = %q, want %q", cfg.Progress, ProgressAuto)
 	}
 }
 
@@ -47,7 +51,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("RETRY_MAX_DELAY_MS", "500")
 	t.Setenv("HTTP_TIMEOUT_MS", "250")
 	t.Setenv("USER_AGENT", "test-agent")
-	t.Setenv("VERBOSE", "1")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("PROGRESS", "off")
 
 	cfg, err := Load()
 	if err != nil {
@@ -72,8 +77,25 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.UserAgent != "test-agent" {
 		t.Errorf("UserAgent = %q, want %q", cfg.UserAgent, "test-agent")
 	}
-	if !cfg.Verbose {
-		t.Error("Verbose = false, want true")
+	if cfg.LogLevel != slog.LevelDebug {
+		t.Errorf("LogLevel = %v, want DEBUG", cfg.LogLevel)
+	}
+	if cfg.Progress != ProgressOff {
+		t.Errorf("Progress = %q, want %q", cfg.Progress, ProgressOff)
+	}
+}
+
+// TestLoadInvalidLogLevelFallsBack keeps the legacy default on garbage input
+// instead of failing the run.
+func TestLoadInvalidLogLevelFallsBack(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "verbose")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel = %v, want fallback INFO", cfg.LogLevel)
 	}
 }
 
@@ -88,6 +110,7 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"negative retries", map[string]string{"RETRIES": "-1"}},
 		{"retry bounds crossed", map[string]string{"RETRY_BASE_DELAY_MS": "10", "RETRY_MAX_DELAY_MS": "5"}},
 		{"no http timeout", map[string]string{"HTTP_TIMEOUT_MS": "0"}},
+		{"bad progress mode", map[string]string{"PROGRESS": "yes"}},
 	}
 
 	for _, tt := range tests {
