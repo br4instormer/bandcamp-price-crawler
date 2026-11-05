@@ -79,9 +79,17 @@ func run() error {
 		log.Warn("No free download albums at all!")
 	}
 
+	// do not terminate after the last url: keep the dashboard (and the
+	// process) up until the user closes it; ctrl+c that cancelled the
+	// crawl takes the old self-terminating path instead
 	processed := ui.Processed()
+	elapsed := ui.Elapsed().Round(time.Second) // pure crawling time
+	if ctx.Err() == nil {
+		ui.WaitUserExit()
+	}
+
 	ui.Stop()
-	log.Info(fmt.Sprintf("Processed %d/%d urls in %s", processed, len(urls), ui.Elapsed().Round(time.Second)))
+	log.Info(fmt.Sprintf("Processed %d/%d urls in %s", processed, len(urls), elapsed))
 	return nil
 }
 

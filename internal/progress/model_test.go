@@ -171,6 +171,71 @@ func TestModelCtrlC(t *testing.T) {
 	}
 }
 
+func TestModelCompletionNoteUnderTable(t *testing.T) {
+	cancelled := false
+	m := newModel(2, func() { cancelled = true }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	heightWhileRunning := m.table.Height()
+
+	m = update(m, msgDone{url: "https://label.bandcamp.com/album/a", price: "$7.50"})
+	if m.finished {
+		t.Error("finished must not flip before every url is handled")
+	}
+
+	m = update(m, msgDone{url: "https://label.bandcamp.com/album/b", price: "Free download"})
+	if !m.finished {
+		t.Fatal("finished must flip once every url is handled")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "all sources processed") {
+		t.Errorf("view missing the completion note, got %q", view)
+	}
+	// the note sits below the table and above the progress bar
+	tableIdx := strings.Index(view, "URL")
+	noteIdx := strings.Index(view, "all sources processed")
+	barIdx := strings.Index(view, "█")
+	if noteIdx < tableIdx || noteIdx > barIdx {
+		t.Errorf("completion note must render between the table (%d) and the bar (%d), got %d", tableIdx, barIdx, noteIdx)
+	}
+	if !strings.Contains(view, "ctrl+c or q — exit") {
+		t.Error("help line should tell how to exit after completion")
+	}
+
+	// the note costs one line: the table shrinks so the view still fits
+	if got := m.table.Height(); got != heightWhileRunning-1 {
+		t.Errorf("table height after completion = %d, want %d", got, heightWhileRunning-1)
+	}
+
+	// with nothing left to cancel, quit keys end the program instead
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c after completion must return a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
+	}
+	if cancelled {
+		t.Error("ctrl+c after completion must not fire the cancel callback")
+	}
+}
+
+func TestModelCompletionCountsFailuresToo(t *testing.T) {
+	m := newModel(1, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = update(m, msgInc{}) // last url failed: counted, no row
+	if !m.finished {
+		t.Error("finished must flip via Inc as well")
+	}
+	if len(m.results) != 0 {
+		t.Errorf("results = %d rows, want 0", len(m.results))
+	}
+	if !strings.Contains(m.View(), "all sources processed") {
+		t.Error("completion note must show for fail-only runs too")
+	}
+}
+
 func TestModelURLTruncatedToColumn(t *testing.T) {
 	m := newModel(20, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 60, Height: 20}) // narrow terminal

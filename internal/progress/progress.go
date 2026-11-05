@@ -26,18 +26,19 @@ const (
 // is nil-safe, so callers may wire no UI at all. Counting works even when
 // the dashboard is off.
 type UI struct {
-	prog      *tea.Program
-	out       io.Writer
-	live      bool
-	total     int64
-	processed atomic.Int64
-	start     time.Time
-	duration  atomic.Int64 // nanoseconds; frozen by Stop
-	stopped   atomic.Bool
-	stopOnce  sync.Once
-	done      chan struct{}
-	ready     chan struct{}
-	cancelFn  func()
+	prog        *tea.Program
+	out         io.Writer
+	live        bool
+	interactive bool // stdin is a terminal: quit keys can end the program
+	total       int64
+	processed   atomic.Int64
+	start       time.Time
+	duration    atomic.Int64 // nanoseconds; frozen by Stop
+	stopped     atomic.Bool
+	stopOnce    sync.Once
+	done        chan struct{}
+	ready       chan struct{}
+	cancelFn    func()
 }
 
 // Option customizes the UI.
@@ -62,13 +63,14 @@ func New(mode string, out io.Writer, isTTY bool, total int, opts ...Option) *UI 
 
 	u.ready = make(chan struct{})
 	u.done = make(chan struct{})
+	u.interactive = term.IsTerminal(int(os.Stdin.Fd()))
 
 	popts := []tea.ProgramOption{
 		tea.WithAltScreen(),
 		tea.WithOutput(out),
 		tea.WithoutSignalHandler(), // SIGINT is handled by the crawler itself
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !u.interactive {
 		popts = append(popts, tea.WithInput(nil))
 	}
 	u.prog = tea.NewProgram(newModel(total, u.cancelFn, func() { close(u.ready) }), popts...)
@@ -185,4 +187,16 @@ func (u *UI) Elapsed() time.Duration {
 		return time.Duration(d)
 	}
 	return time.Since(u.start)
+}
+
+// WaitUserExit blocks until the user closes the live dashboard: once every
+// url is handled its quit keys (ctrl+c/q/esc) terminate the program, so the
+// results stay on screen as long as the user wants. It returns immediately
+// when nothing can capture keys — the dashboard is off or stdin is not a
+// terminal — so callers keep the previous self-terminating behaviour.
+func (u *UI) WaitUserExit() {
+	if u == nil || !u.live || !u.interactive {
+		return
+	}
+	<-u.done
 }

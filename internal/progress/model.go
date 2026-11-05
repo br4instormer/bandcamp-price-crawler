@@ -47,6 +47,7 @@ var (
 	spinStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	cursorStyle = lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color("236"))
 	helpStyle   = lipgloss.NewStyle().Faint(true)
+	doneStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
 )
 
 // model is the Bubble Tea model behind the live dashboard.
@@ -66,6 +67,7 @@ type model struct {
 	width    int
 	height   int
 	stopping bool
+	finished bool // every url handled: note under the table, keys exit
 }
 
 func newModel(total int, cancel, onReady func()) model {
@@ -118,6 +120,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
+			if m.finished {
+				// nothing left to cancel: these keys now close the
+				// dashboard and end the program
+				return m, tea.Quit
+			}
 			if !m.stopping && m.cancel != nil {
 				m.cancel()
 			}
@@ -154,8 +161,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if follow {
 			m.table.SetCursor(len(m.results) - 1)
 		}
+		m.markFinished()
 	case msgInc:
 		m.processed++
+		m.markFinished()
 	case msgLog:
 		if msg.level == "INFO" {
 			// results already live in the table; INFO lines would duplicate
@@ -189,6 +198,10 @@ func (m model) View() string {
 	b.WriteString(metaStyle.Render(fmt.Sprintf("   elapsed %s   ETA %s", fmtDur(time.Since(m.start)), m.eta())))
 	b.WriteString("\n\n")
 	b.WriteString(m.table.View())
+	if m.finished {
+		b.WriteString("\n")
+		b.WriteString(doneStyle.Render("  ✓ all sources processed"))
+	}
 	b.WriteString("\n\n")
 	b.WriteString(m.bar.ViewAs(pct))
 	b.WriteString("\n\n")
@@ -196,6 +209,8 @@ func (m model) View() string {
 	b.WriteString("\n ")
 	if m.stopping {
 		b.WriteString(helpStyle.Render("stopping — waiting for in-flight urls…"))
+	} else if m.finished {
+		b.WriteString(helpStyle.Render("↑/↓ — scroll   ctrl+c or q — exit"))
 	} else {
 		help := "↑/↓ — scroll   ctrl+c — stop"
 		if !m.following() {
@@ -209,6 +224,18 @@ func (m model) View() string {
 // following reports whether the table cursor rests on the newest row.
 func (m model) following() bool {
 	return len(m.results) == 0 || m.table.Cursor() >= len(m.results)-1
+}
+
+// markFinished flips the dashboard into its final state once every url has
+// been accounted for: a completion note appears under the table and the
+// quit keys start closing the program. The crawler itself keeps running
+// until the user exits.
+func (m *model) markFinished() {
+	if m.finished || m.total == 0 || m.processed < m.total {
+		return
+	}
+	m.finished = true
+	m.reflow()
 }
 
 // eta estimates the remaining time from the current processing rate.
@@ -253,7 +280,11 @@ func (m *model) layout() {
 // view exceeds the terminal height, which would eat the title.
 func (m *model) reflow() {
 	logLines := 1 + min(len(m.logs), logTailLen)
-	m.table.SetHeight(max(3, m.height-logLines-7))
+	fixed := 7 // title + blanks + bar + help + one spare line
+	if m.finished {
+		fixed++ // the completion note under the table
+	}
+	m.table.SetHeight(max(3, m.height-logLines-fixed))
 }
 
 // syncRows rebuilds the table rows from the results, oldest first.

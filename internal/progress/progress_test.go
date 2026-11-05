@@ -5,6 +5,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestNewInactiveCountsAnyway(t *testing.T) {
@@ -96,11 +99,53 @@ func TestNilUIIsInert(t *testing.T) {
 	u.Done("x", "$1")
 	u.Inc()
 	u.Stop()
+	u.WaitUserExit()
 	if u.Active() {
 		t.Error("nil UI must not be active")
 	}
 	if u.Processed() != 0 || u.Elapsed() != 0 {
 		t.Error("nil UI must report zeros")
+	}
+}
+
+func TestWaitUserExitReturnsWithoutListening(t *testing.T) {
+	var buf bytes.Buffer
+	New(ModeOff, &buf, true, 1).WaitUserExit() // dashboard off: must not block
+
+	u := New(ModeOn, &buf, false, 1)
+	defer u.Stop()
+	// stdin is not a terminal under go test: no quit key can ever arrive,
+	// so waiting would hang the process forever
+	u.WaitUserExit() // must return immediately
+}
+
+func TestWaitUserExitBlocksUntilUserQuits(t *testing.T) {
+	var buf bytes.Buffer
+	u := New(ModeOn, &buf, false, 1)
+	defer u.Stop()
+	u.interactive = true // pretend stdin is a terminal so keys can arrive
+
+	u.Done("https://label.bandcamp.com/album/a", "$7.50")
+
+	waited := make(chan struct{})
+	go func() {
+		u.WaitUserExit()
+		close(waited)
+	}()
+
+	// the crawl is over but the user has not quit yet: keep the process up
+	select {
+	case <-waited:
+		t.Fatal("WaitUserExit returned before the user pressed a quit key")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// quit keys after completion close the dashboard itself
+	u.prog.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	select {
+	case <-waited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctrl+c after completion must end the dashboard and unblock WaitUserExit")
 	}
 }
 
