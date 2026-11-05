@@ -50,8 +50,13 @@ func run() error {
 
 	// While the dashboard is live the logger must write through it
 	// (progress.UI.LogWriter) instead of stdout; ctrl+c in the dashboard
-	// cancels ctx via WithCancel.
-	ui := progress.New(cfg.Progress, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), len(urls), progress.WithCancel(stop))
+	// cancels ctx via WithCancel. The space pause: the dashboard toggles
+	// the gate, workers block on it before taking the next url.
+	gate := queue.NewGate()
+	ui := progress.New(cfg.Progress, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), len(urls),
+		progress.WithCancel(stop),
+		progress.WithPause(gate.Set),
+	)
 	log := logger.New(ui.LogWriter(), cfg.LogLevel)
 
 	if len(urls) == 0 {
@@ -73,6 +78,7 @@ func run() error {
 		Counter:  cnt,
 		Log:      log,
 		Progress: ui,
+		Gate:     gate,
 	})
 
 	if cli.free && cnt.Get(cost.FreeDownload) == 0 {

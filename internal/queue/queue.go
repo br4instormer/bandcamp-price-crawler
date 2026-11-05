@@ -28,6 +28,7 @@ type Options struct {
 	Counter  *counter.Counter
 	Log      *slog.Logger
 	Progress *progress.UI // may be nil
+	Gate     *Gate        // space pause from the dashboard; nil means never pausable
 }
 
 // Run feeds urls into a worker pool of opts.Workers goroutines and returns
@@ -41,6 +42,9 @@ func Run(ctx context.Context, urls []string, opts Options) {
 		go func() {
 			defer wg.Done()
 			for url := range jobs {
+				// the space pause holds here: dequeued urls wait instead
+				// of being processed; ctx cancel releases the wait
+				opts.Gate.Wait(ctx)
 				opts.process(ctx, url)
 			}
 		}()

@@ -48,6 +48,7 @@ var (
 	cursorStyle = lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color("236"))
 	helpStyle   = lipgloss.NewStyle().Faint(true)
 	doneStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
+	pauseStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 )
 
 // model is the Bubble Tea model behind the live dashboard.
@@ -62,15 +63,17 @@ type model struct {
 	total     int
 
 	start    time.Time
-	cancel   func() // invoked on ctrl+c/q; stops the crawler
-	onReady  func() // fired once the event loop runs
+	cancel   func()     // invoked on ctrl+c/q; stops the crawler
+	onPause  func(bool) // pushes space pause/resume to the crawler gate
+	onReady  func()     // fired once the event loop runs
 	width    int
 	height   int
 	stopping bool
+	paused   bool // space pause: no new urls are dequeued by the workers
 	finished bool // every url handled: note under the table, keys exit
 }
 
-func newModel(total int, cancel, onReady func()) model {
+func newModel(total int, cancel func(), onPause func(paused bool), onReady func()) model {
 	tbl := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "URL", Width: urlColMin},
@@ -94,6 +97,7 @@ func newModel(total int, cancel, onReady func()) model {
 		total:   total,
 		start:   time.Now(),
 		cancel:  cancel,
+		onPause: onPause,
 		onReady: onReady,
 	}
 }
@@ -129,6 +133,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 			}
 			m.stopping = true
+			m.setPaused(false) // the pause ends with the crawl
+			return m, nil
+		case " ":
+			// the pause exists only while the crawl is running: after
+			// completion or once a stop was requested space is inert
+			if m.stopping || m.finished || m.onPause == nil {
+				return m, nil
+			}
+			m.setPaused(!m.paused)
 			return m, nil
 		}
 		// everything else feeds the table (scrolling)
@@ -190,7 +203,9 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	if m.processed < m.total {
+	if m.paused {
+		b.WriteString(pauseStyle.Render("⏸ paused"))
+	} else if m.processed < m.total {
 		b.WriteString(m.spinner.View() + " ")
 	}
 	b.WriteString(titleStyle.Render("bandcamp crawler"))
@@ -212,9 +227,13 @@ func (m model) View() string {
 	} else if m.finished {
 		b.WriteString(helpStyle.Render("↑/↓ — scroll   ctrl+c or q — exit"))
 	} else {
-		help := "↑/↓ — scroll   ctrl+c — stop"
+		pause := "space — pause"
+		if m.paused {
+			pause = "space — resume"
+		}
+		help := "↑/↓ — scroll   " + pause + "   ctrl+c — stop"
 		if !m.following() {
-			help = "↑/↓ — scroll   G — latest   ctrl+c — stop"
+			help = "↑/↓ — scroll   G — latest   " + pause + "   ctrl+c — stop"
 		}
 		b.WriteString(helpStyle.Render(help))
 	}
@@ -226,6 +245,17 @@ func (m model) following() bool {
 	return len(m.results) == 0 || m.table.Cursor() >= len(m.results)-1
 }
 
+// setPaused flips the space pause and pushes it to the crawler gate.
+func (m *model) setPaused(paused bool) {
+	if m.paused == paused {
+		return
+	}
+	m.paused = paused
+	if m.onPause != nil {
+		m.onPause(paused)
+	}
+}
+
 // markFinished flips the dashboard into its final state once every url has
 // been accounted for: a completion note appears under the table and the
 // quit keys start closing the program. The crawler itself keeps running
@@ -235,13 +265,15 @@ func (m *model) markFinished() {
 		return
 	}
 	m.finished = true
+	m.setPaused(false) // the pause is over once the crawl is done
 	m.reflow()
 }
 
 // eta estimates the remaining time from the current processing rate.
 func (m model) eta() string {
 	switch {
-	case m.total == 0 || m.processed >= m.total:
+	case m.total == 0 || m.processed >= m.total, m.paused:
+		// paused: the queue is held, so there is no meaningful estimate
 		return "—"
 	case m.processed == 0:
 		return "…"

@@ -149,6 +149,49 @@ func TestWaitUserExitBlocksUntilUserQuits(t *testing.T) {
 	}
 }
 
+// TestWithPausePlumbsSpaceKey drives a real program loop: the space key
+// from stdin emulation must reach the WithPause callback.
+func TestWithPausePlumbsSpaceKey(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	var got []bool
+	seen := func() []bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]bool(nil), got...)
+	}
+	u := New(ModeOn, &buf, false, 3, WithPause(func(paused bool) {
+		mu.Lock()
+		got = append(got, paused)
+		mu.Unlock()
+	}))
+	defer u.Stop()
+
+	u.prog.Send(tea.KeyMsg{Type: tea.KeySpace})
+	deadline := time.Now().Add(3 * time.Second)
+	for len(seen()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("space never fired the pause callback")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := seen(); len(state) != 1 || !state[0] {
+		t.Errorf("pause callback got %v, want [true]", state)
+	}
+
+	u.prog.Send(tea.KeyMsg{Type: tea.KeySpace})
+	deadline = time.Now().Add(3 * time.Second)
+	for len(seen()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("second space never fired the resume callback")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := seen(); state[1] {
+		t.Errorf("pause callback got %v, want [true, false]", state)
+	}
+}
+
 func TestShorten(t *testing.T) {
 	short := "https://x.bandcamp.com/album/short"
 	if got := shorten(short, 60); got != short {

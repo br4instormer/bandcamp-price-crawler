@@ -14,7 +14,7 @@ func update(m model, msg tea.Msg) model {
 }
 
 func TestModelResultsTable(t *testing.T) {
-	m := newModel(10, func() {}, nil)
+	m := newModel(10, func() {}, nil, nil)
 
 	if view := m.View(); !strings.Contains(view, "starting") {
 		t.Errorf("view before WindowSizeMsg should be a placeholder, got %q", view)
@@ -68,7 +68,7 @@ func TestModelResultsTable(t *testing.T) {
 }
 
 func TestModelScrollFollow(t *testing.T) {
-	m := newModel(50, nil, nil)
+	m := newModel(50, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	for i := range 20 {
@@ -110,7 +110,7 @@ func TestModelScrollFollow(t *testing.T) {
 }
 
 func TestModelInfoLogsFiltered(t *testing.T) {
-	m := newModel(5, nil, nil)
+	m := newModel(5, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, msgLog{level: "INFO", line: "21:00:00 INFO  [Free download] https://x/album/a"})
@@ -133,7 +133,7 @@ func TestModelInfoLogsFiltered(t *testing.T) {
 }
 
 func TestModelWarningsTailCapped(t *testing.T) {
-	m := newModel(5, nil, nil)
+	m := newModel(5, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	for i := range logTailLen + 4 {
@@ -147,9 +147,134 @@ func TestModelWarningsTailCapped(t *testing.T) {
 	}
 }
 
+func TestModelSpaceTogglesPause(t *testing.T) {
+	var got []bool
+	m := newModel(5, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	// first space pauses the crawl
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	if !m.paused {
+		t.Error("first space press must pause the crawl")
+	}
+	if len(got) != 1 || !got[0] {
+		t.Errorf("pause callback got %v, want [true]", got)
+	}
+	if !strings.Contains(m.View(), "⏸ paused") {
+		t.Error("view should show the paused marker in the header")
+	}
+	if !strings.Contains(m.View(), "space — resume") {
+		t.Error("legend should offer space to resume while paused")
+	}
+
+	// second space resumes
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	if m.paused {
+		t.Error("second space press must resume the crawl")
+	}
+	if len(got) != 2 || got[1] {
+		t.Errorf("pause callback got %v, want [true, false]", got)
+	}
+	if strings.Contains(m.View(), "paused") {
+		t.Error("a running crawl must not show the paused marker")
+	}
+	if !strings.Contains(m.View(), "space — pause") {
+		t.Error("legend should offer space to pause while crawling")
+	}
+}
+
+func TestModelPauseUnavailable(t *testing.T) {
+	var got []bool
+	m := newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	space := tea.KeyMsg{Type: tea.KeySpace}
+
+	// after every url is handled space must not pause anything
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	m = update(m, space)
+	if m.paused {
+		t.Error("space after completion must not pause")
+	}
+	if len(got) != 0 {
+		t.Errorf("pause callback got %v, want none", got)
+	}
+	if strings.Contains(m.View(), "paused") {
+		t.Error("finished dashboard must not show the paused marker")
+	}
+	if !strings.Contains(m.View(), "ctrl+c or q — exit") {
+		t.Error("legend after completion must not offer the pause key")
+	}
+
+	// stopping leaves the pause unavailable too
+	m = newModel(5, func() {}, func(paused bool) { got = append(got, paused) }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = update(m, space)
+	if m.paused {
+		t.Error("space after a stop request must not pause")
+	}
+	if len(got) != 0 {
+		t.Errorf("pause callback got %v, want none", got)
+	}
+	if !strings.Contains(m.View(), "stopping") || strings.Contains(m.View(), "⏸") {
+		t.Error("stopping dashboard must not show the paused marker")
+	}
+}
+
+func TestModelPauseEndsWithCrawl(t *testing.T) {
+	var got []bool
+	m := newModel(2, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if m.paused {
+		t.Error("ctrl+c must release the pause with the crawl")
+	}
+
+	// the model may still be paused when the last url lands: finishing
+	// clears the pause and releases the gate
+	got = nil
+	m = newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	if m.paused || !m.finished {
+		t.Error("completion must clear the paused state")
+	}
+	if len(got) != 2 || got[1] {
+		t.Errorf("pause callback got %v, want [true, false]", got)
+	}
+}
+
+func TestModelPauseNeedsCallback(t *testing.T) {
+	// without a wired gate, space must not fake a paused state
+	m := newModel(5, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	if m.paused {
+		t.Error("space without a pause callback must be inert")
+	}
+}
+
+func TestModelEtaHiddenWhilePaused(t *testing.T) {
+	m := newModel(5, nil, func(bool) {}, nil)
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	if got := m.eta(); got == "—" || got == "…" {
+		t.Errorf("running eta = %q, want an estimate", got)
+	}
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	if got := m.eta(); got != "—" {
+		t.Errorf("paused eta = %q, want —", got)
+	}
+	if strings.Contains(m.View(), "ETA 1s") {
+		t.Error("paused dashboard should show no time estimate")
+	}
+}
+
 func TestModelCtrlC(t *testing.T) {
 	cancelled := false
-	m := newModel(2, func() { cancelled = true }, nil)
+	m := newModel(2, func() { cancelled = true }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -173,7 +298,7 @@ func TestModelCtrlC(t *testing.T) {
 
 func TestModelCompletionNoteUnderTable(t *testing.T) {
 	cancelled := false
-	m := newModel(2, func() { cancelled = true }, nil)
+	m := newModel(2, func() { cancelled = true }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	heightWhileRunning := m.table.Height()
 
@@ -221,7 +346,7 @@ func TestModelCompletionNoteUnderTable(t *testing.T) {
 }
 
 func TestModelCompletionCountsFailuresToo(t *testing.T) {
-	m := newModel(1, nil, nil)
+	m := newModel(1, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, msgInc{}) // last url failed: counted, no row
@@ -237,7 +362,7 @@ func TestModelCompletionCountsFailuresToo(t *testing.T) {
 }
 
 func TestModelURLTruncatedToColumn(t *testing.T) {
-	m := newModel(20, nil, nil)
+	m := newModel(20, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 60, Height: 20}) // narrow terminal
 
 	long := "https://label.bandcamp.com/album/" + strings.Repeat("x", 80)
@@ -250,7 +375,7 @@ func TestModelURLTruncatedToColumn(t *testing.T) {
 }
 
 func TestModelInitBatchesCommands(t *testing.T) {
-	m := newModel(1, nil, nil)
+	m := newModel(1, nil, nil, nil)
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init() must return a command")

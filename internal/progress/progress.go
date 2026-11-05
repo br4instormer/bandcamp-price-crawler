@@ -39,6 +39,7 @@ type UI struct {
 	done        chan struct{}
 	ready       chan struct{}
 	cancelFn    func()
+	pauseFn     func(paused bool)
 }
 
 // Option customizes the UI.
@@ -48,6 +49,15 @@ type Option func(*UI)
 // in the live dashboard; use it to cancel the crawler context.
 func WithCancel(cancel func()) Option {
 	return func(u *UI) { u.cancelFn = cancel }
+}
+
+// WithPause registers a callback fired when the user presses space in the
+// live dashboard: true pauses the crawl, false resumes it. Wire it to a
+// queue.Gate (its Set method fits the signature directly). The key works
+// only while urls are still being processed — after completion or once a
+// stop was requested the dashboard ignores it.
+func WithPause(onPause func(paused bool)) Option {
+	return func(u *UI) { u.pauseFn = onPause }
 }
 
 // New builds a UI tracking total URLs. The live dashboard runs only when
@@ -73,7 +83,7 @@ func New(mode string, out io.Writer, isTTY bool, total int, opts ...Option) *UI 
 	if !u.interactive {
 		popts = append(popts, tea.WithInput(nil))
 	}
-	u.prog = tea.NewProgram(newModel(total, u.cancelFn, func() { close(u.ready) }), popts...)
+	u.prog = tea.NewProgram(newModel(total, u.cancelFn, u.pauseFn, func() { close(u.ready) }), popts...)
 	u.live = true
 
 	go func() {
