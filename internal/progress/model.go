@@ -23,6 +23,12 @@ type (
 		level string
 		line  string
 	}
+	// msgProxy reports the proxy pool state: how many proxies serve the run
+	// and how many are blocked for exhausting their error budgets.
+	msgProxy struct {
+		total   int
+		blocked int
+	}
 	// msgReset wipes the dashboard before a restarted crawl: the model
 	// starts over as if the run had never happened.
 	msgReset struct{}
@@ -65,6 +71,8 @@ type model struct {
 	logs      []string // warnings/errors only
 	processed int
 	total     int
+	proxies   int // proxy pool size; 0 hides the proxy line
+	blocked   int // proxies currently blocked by the error budget
 
 	start      time.Time
 	cancel     func()     // invoked on ctrl+c/q; stops the crawler
@@ -223,9 +231,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logs = m.logs[len(m.logs)-logTailLen:]
 		}
 		m.reflow()
+	case msgProxy:
+		// not dropped while restarting: the fresh pool reports itself right
+		// after msgReset, and this line outlives the per-run reset anyway
+		if msg.total != m.proxies || msg.blocked != m.blocked {
+			m.proxies = msg.total
+			m.blocked = msg.blocked
+			m.reflow()
+		}
 	case msgReset:
 		// the restarted crawl begins: drop everything the previous run
-		// left behind
+		// left behind. The proxy line is kept — the fresh pool re-reports
+		// itself (unblocked, budgets reset) right after this.
 		m.results = nil
 		m.logs = nil
 		m.processed = 0
@@ -262,7 +279,12 @@ func (m model) View() string {
 	b.WriteString(titleStyle.Render("bandcamp crawler"))
 	b.WriteString(fmt.Sprintf("  %d/%d (%.0f%%)", m.processed, m.total, pct*100))
 	b.WriteString(metaStyle.Render(fmt.Sprintf("   elapsed %s   ETA %s", fmtDur(time.Since(m.start)), m.eta())))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if m.proxies > 0 {
+		b.WriteString(metaStyle.Render(fmt.Sprintf("   proxies: %d (blocked: %d)", m.proxies, m.blocked)))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(m.table.View())
 	if m.finished {
 		b.WriteString("\n")
@@ -374,6 +396,9 @@ func (m *model) layout() {
 func (m *model) reflow() {
 	logLines := 1 + min(len(m.logs), logTailLen)
 	fixed := 7 // title + blanks + bar + help + one spare line
+	if m.proxies > 0 {
+		fixed++ // the proxy line under the title
+	}
 	if m.finished {
 		fixed++ // the completion note under the table
 	}

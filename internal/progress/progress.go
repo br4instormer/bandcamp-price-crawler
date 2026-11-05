@@ -145,6 +145,17 @@ func (u *UI) Inc() {
 	}
 }
 
+// ProxyStats pushes the proxy pool state to the dashboard: how many proxies
+// serve the run and how many are currently blocked for exhausting their
+// error budgets. It is safe to call from any goroutine; a nil or inactive
+// UI ignores it.
+func (u *UI) ProxyStats(total, blocked int) {
+	if u == nil || !u.live || u.stopped.Load() {
+		return
+	}
+	u.prog.Send(msgProxy{total: total, blocked: blocked})
+}
+
 // Processed returns how many URLs have been handled so far.
 func (u *UI) Processed() int64 {
 	if u == nil {

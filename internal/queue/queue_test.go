@@ -16,6 +16,7 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/counter"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/httpclient"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/limiter"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/proxypool"
 )
 
 const freePage = `<div class="buyItem digital">
@@ -64,7 +65,7 @@ func pausedQueueOptions(srv *httptest.Server, gate *Gate) Options {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-		Client:   httpclient.New(cfg, log, th),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
 		Throttle: th,
 		Counter:  &counter.Counter{},
 		Log:      log,
@@ -168,7 +169,7 @@ func TestRunProcessesAllURLs(t *testing.T) {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-		Client:   httpclient.New(cfg, log, th),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
 		Throttle: th,
 		Counter:  cnt,
 		Log:      log,
@@ -212,7 +213,7 @@ func TestRunRespectsRequestLimit(t *testing.T) {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(limit),
-		Client:   httpclient.New(cfg, log, th),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
 		Throttle: th,
 		Counter:  cnt,
 		Log:      log,

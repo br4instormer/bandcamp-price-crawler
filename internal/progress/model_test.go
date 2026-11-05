@@ -521,3 +521,34 @@ func TestModelResetRestartsTiming(t *testing.T) {
 		t.Errorf("start after reset is %s old, want fresh", since)
 	}
 }
+
+func TestModelProxyLine(t *testing.T) {
+	m := newModel(5, nil, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	// without proxies the line stays hidden
+	if strings.Contains(m.View(), "proxies:") {
+		t.Error("dashboard without proxies must not show the proxy line")
+	}
+
+	m = update(m, msgProxy{total: 4, blocked: 0})
+	if !strings.Contains(m.View(), "proxies: 4 (blocked: 0)") {
+		t.Errorf("view missing the proxy line, got %q", m.View())
+	}
+
+	// a block updates the counter in place
+	m = update(m, msgProxy{total: 4, blocked: 1})
+	if !strings.Contains(m.View(), "proxies: 4 (blocked: 1)") {
+		t.Errorf("view missing the blocked count, got %q", m.View())
+	}
+
+	// the report arrives even while restarting: the fresh pool re-reports
+	// itself right after msgReset, and the line outlives the reset
+	m.restarting = true
+	m = update(m, msgProxy{total: 4, blocked: 0})
+	m.restarting = false
+	m = update(m, msgReset{})
+	if !strings.Contains(m.View(), "proxies: 4 (blocked: 0)") {
+		t.Error("msgReset must keep the pool state (the fresh pool re-reports)")
+	}
+}

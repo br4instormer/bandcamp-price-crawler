@@ -45,6 +45,13 @@ type Config struct {
 	HTTPTimeout time.Duration
 	// UserAgent is sent with every request (USER_AGENT).
 	UserAgent string
+	// HTTPProxies is the raw HTTP_PROXIES value: a comma-separated proxy
+	// list, a path to a file with one proxy per line, or empty for no
+	// proxies. Parsing happens in internal/proxypool.
+	HTTPProxies string
+	// ProxyErrorBudget is how many consecutive failed attempts through one
+	// proxy block it until the run restarts (PROXY_ERROR_BUDGET).
+	ProxyErrorBudget int
 	// LogLevel is the minimum log level (LOG_LEVEL: debug|info|warn|error).
 	LogLevel slog.Level
 	// Progress controls the live task table (PROGRESS: auto|on|off).
@@ -66,10 +73,12 @@ func Load() (*Config, error) {
 		RetryMaxDelay:  envDuration("RETRY_MAX_DELAY_MS", time.Minute),
 		HTTPTimeout:    envDuration("HTTP_TIMEOUT_MS", 30*time.Second),
 		UserAgent:      envStr("USER_AGENT", DefaultUserAgent),
+		HTTPProxies:    envStr("HTTP_PROXIES", ""),
 		LogLevel:       envLevel("LOG_LEVEL", slog.LevelInfo),
 		Progress:       envStr("PROGRESS", ProgressAuto),
 	}
 	cfg.MaxConcurrentRequests = envInt("MAX_CONCURRENT_REQUESTS", cfg.Workers)
+	cfg.ProxyErrorBudget = envInt("PROXY_ERROR_BUDGET", 5)
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -93,6 +102,8 @@ func (c *Config) validate() error {
 		return errors.New("HTTP_TIMEOUT_MS must be positive")
 	case c.UserAgent == "":
 		return errors.New("USER_AGENT must not be empty")
+	case c.ProxyErrorBudget < 1:
+		return errors.New("PROXY_ERROR_BUDGET must be at least 1")
 	case c.Progress != ProgressAuto && c.Progress != ProgressOn && c.Progress != ProgressOff:
 		return fmt.Errorf("PROGRESS must be %s, %s or %s, got %q", ProgressAuto, ProgressOn, ProgressOff, c.Progress)
 	}

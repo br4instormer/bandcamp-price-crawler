@@ -21,6 +21,7 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/limiter"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/logger"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/progress"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/proxypool"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/queue"
 
 	"golang.org/x/term"
@@ -75,21 +76,25 @@ func run() error {
 		return nil
 	}
 
+	// the proxy list parses once, the pool itself is run-scoped below
+	proxyEntries := proxypool.Parse(cfg.HTTPProxies, log)
+
 	for {
 		runCtx, cancel := context.WithCancel(ctx)
 		runCancel.Store(&cancel)
 
 		// a restarted crawl starts from a clean slate: rate limiting,
-		// retries and statistics are all run-scoped state
+		// retries, statistics and proxy blocks are all run-scoped state
 		throttle := backoff.NewThrottle(backoff.MaxMultiplier)
 		cnt := &counter.Counter{}
+		pool := proxypool.New(proxyEntries, cfg, log, ui.ProxyStats)
 		queue.Run(runCtx, urls, queue.Options{
 			Workers:  cfg.Workers,
 			DelayMin: cfg.DelayMin,
 			DelayMax: cfg.DelayMax,
 			OnlyFree: cli.free,
 			Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-			Client:   httpclient.New(cfg, log, throttle),
+			Client:   httpclient.New(cfg, log, throttle, pool),
 			Throttle: throttle,
 			Counter:  cnt,
 			Log:      log,

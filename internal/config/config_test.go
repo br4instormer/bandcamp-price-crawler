@@ -39,6 +39,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Progress != ProgressAuto {
 		t.Errorf("Progress = %q, want %q", cfg.Progress, ProgressAuto)
 	}
+	if cfg.HTTPProxies != "" {
+		t.Errorf("HTTPProxies = %q, want empty (no proxies)", cfg.HTTPProxies)
+	}
+	if cfg.ProxyErrorBudget != 5 {
+		t.Errorf("ProxyErrorBudget = %d, want 5", cfg.ProxyErrorBudget)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -53,6 +59,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("USER_AGENT", "test-agent")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("PROGRESS", "off")
+	t.Setenv("HTTP_PROXIES", "socks5://socks5.proxies:1080,socks5://user:password@p:1080")
+	t.Setenv("PROXY_ERROR_BUDGET", "3")
 
 	cfg, err := Load()
 	if err != nil {
@@ -83,6 +91,12 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.Progress != ProgressOff {
 		t.Errorf("Progress = %q, want %q", cfg.Progress, ProgressOff)
 	}
+	if cfg.HTTPProxies != "socks5://socks5.proxies:1080,socks5://user:password@p:1080" {
+		t.Errorf("HTTPProxies = %q, want the raw spec", cfg.HTTPProxies)
+	}
+	if cfg.ProxyErrorBudget != 3 {
+		t.Errorf("ProxyErrorBudget = %d, want 3", cfg.ProxyErrorBudget)
+	}
 }
 
 // TestLoadInvalidLogLevelFallsBack keeps the legacy default on garbage input
@@ -111,6 +125,7 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"retry bounds crossed", map[string]string{"RETRY_BASE_DELAY_MS": "10", "RETRY_MAX_DELAY_MS": "5"}},
 		{"no http timeout", map[string]string{"HTTP_TIMEOUT_MS": "0"}},
 		{"bad progress mode", map[string]string{"PROGRESS": "yes"}},
+		{"no proxy budget", map[string]string{"PROXY_ERROR_BUDGET": "0"}},
 	}
 
 	for _, tt := range tests {

@@ -6,18 +6,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/valyala/fasthttp"
+
 	"github.com/br4instormer/bandcamp-price-crawler/internal/backoff"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/config"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/proxypool"
 )
-
-// maxBodyBytes guards against pathological responses.
-const maxBodyBytes = 16 << 20
 
 // StatusError marks a non-2xx response.
 type StatusError struct {
@@ -30,39 +29,32 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s: %d %s", e.URL, e.Status, e.Reason)
 }
 
-// Client wraps http.Client with retry pacing and the shared throttle.
+// Client fetches pages through the proxy pool with retry pacing and the
+// shared throttle.
 type Client struct {
-	http     *http.Client
+	pool     *proxypool.Pool
 	cfg      *config.Config
 	log      *slog.Logger
 	throttle *backoff.Throttle
 }
 
-// New builds a Client; connections are pooled per host according to the
-// configured in-flight limit.
-func New(cfg *config.Config, log *slog.Logger, throttle *backoff.Throttle) *Client {
-	return &Client{
-		http: &http.Client{
-			Timeout: cfg.HTTPTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        cfg.MaxConcurrentRequests,
-				MaxIdleConnsPerHost: cfg.MaxConcurrentRequests,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
-		cfg:      cfg,
-		log:      log,
-		throttle: throttle,
-	}
+// New builds a Client. Every attempt takes the next proxy from the pool,
+// which also serves the direct connection when proxies are absent or all
+// blocked.
+func New(cfg *config.Config, log *slog.Logger, throttle *backoff.Throttle, pool *proxypool.Pool) *Client {
+	return &Client{pool: pool, cfg: cfg, log: log, throttle: throttle}
 }
 
 // Fetch downloads url and returns the response body. Network errors, 429 and
 // 5xx responses are retried up to cfg.Retries times with exponentially growing
 // delays; every 429 additionally widens the global throttle so the pauses
-// between all future requests grow until the server recovers.
+// between all future requests grow until the server recovers. Each attempt
+// takes the next proxy in the pool's round-robin.
 func (c *Client) Fetch(ctx context.Context, url string) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
-		body, retryAfter, err := c.once(ctx, url)
+		proxy := c.pool.Next()
+		body, retryAfter, err := c.once(ctx, proxy, url)
+		c.pool.Report(proxy, healthy(err))
 		switch {
 		case err == nil:
 			c.throttle.Ease()
@@ -85,35 +77,63 @@ func (c *Client) Fetch(ctx context.Context, url string) ([]byte, error) {
 	}
 }
 
-// once performs a single GET and classifies the outcome.
-func (c *Client) once(ctx context.Context, url string) (body []byte, retryAfter time.Duration, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, 0, err
-	}
+// once performs a single GET through proxy and classifies the outcome.
+func (c *Client) once(ctx context.Context, proxy *proxypool.Proxy, url string) (body []byte, retryAfter time.Duration, err error) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	// A cancelled context abandons the in-flight exchange: the background
+	// exchange keeps writing into these buffers until its own timeouts end
+	// it, so they must never go back to the sync pools.
+	abandoned := false
+	defer func() {
+		if !abandoned {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI(url)
 	req.Header.Set("User-Agent", c.cfg.UserAgent)
 
-	resp, err := c.http.Do(req)
+	// fasthttp has no context-aware Do: the exchange runs in the background
+	// and the select returns as soon as it ends or the caller cancelled.
+	errCh := make(chan error, 1)
+	go func() { errCh <- proxy.Do(req, resp) }()
+	select {
+	case err = <-errCh:
+	case <-ctx.Done():
+		abandoned = true
+		return nil, 0, ctx.Err()
+	}
 	if err != nil {
 		return nil, 0, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// Drain a bit of the body so the connection can be reused.
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-		return nil, parseRetryAfter(resp), &StatusError{
+	status := resp.StatusCode()
+	if status < 200 || status > 299 {
+		return nil, parseRetryAfter(string(resp.Header.Peek("Retry-After"))), &StatusError{
 			URL:    url,
-			Status: resp.StatusCode,
-			Reason: http.StatusText(resp.StatusCode),
+			Status: status,
+			Reason: fasthttp.StatusMessage(status),
 		}
 	}
 
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	if err != nil {
-		return nil, 0, err
+	// Body lives in the response's own buffer: copy it out before the
+	// deferred release hands the buffer to the next request.
+	return append([]byte(nil), resp.Body()...), 0, nil
+}
+
+// healthy reports whether the proxy did its part: a success, or a status it
+// merely delivered (an ordinary 404, say), keeps it in rotation, while
+// transport failures, 429 — the proxy IP being filtered — and 5xx responses
+// count toward its error budget.
+func healthy(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status < 500 && se.Status != http.StatusTooManyRequests
 	}
-	return body, 0, nil
+	return err == nil
 }
 
 func retryable(err error) bool {
@@ -132,11 +152,7 @@ func rateLimited(err error) bool {
 	return errors.As(err, &se) && se.Status == http.StatusTooManyRequests
 }
 
-func parseRetryAfter(resp *http.Response) time.Duration {
-	v := resp.Header.Get("Retry-After")
-	if v == "" {
-		return 0
-	}
+func parseRetryAfter(v string) time.Duration {
 	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
 		return time.Duration(secs) * time.Second
 	}
