@@ -80,3 +80,38 @@ func TestParseCost(t *testing.T) {
 		})
 	}
 }
+
+func TestReady(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		want bool
+	}{
+		{
+			name: "real album page carries the blob",
+			html: `<div class="buyItem digital"></div>
+				<script id="collectors-data" data-blob="{&quot;thumbs&quot;:[]}"></script>`,
+			want: true,
+		},
+		{
+			name: "client challenge placeholder",
+			html: `<html><head><title>Client Challenge</title></head>
+				<body><script src="/_fs-ch-1T1wmsGaOgGaSxcX/script.js?reload=true"></script></body></html>`,
+			want: false,
+		},
+		{
+			name: "collectors-data without the blob attribute",
+			html: `<script id="collectors-data"></script>`,
+			want: false,
+		},
+		{"empty page", ``, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Ready(tt.html); got != tt.want {
+				t.Errorf("Ready() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

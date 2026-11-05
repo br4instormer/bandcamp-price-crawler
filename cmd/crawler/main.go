@@ -23,6 +23,7 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/progress"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/proxypool"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/queue"
+	"github.com/br4instormer/bandcamp-price-crawler/internal/solver"
 
 	"golang.org/x/term"
 )
@@ -79,6 +80,19 @@ func run() error {
 	// the proxy list parses once, the pool itself is run-scoped below
 	proxyEntries := proxypool.Parse(cfg.HTTPProxies, log)
 
+	// challenge solvers: FlareSolverr first when configured, rod as the
+	// always-present fallback. Preflight adopts a system browser or starts
+	// the lazy managed download in the background while the crawl runs.
+	rodSolver := solver.NewRod(cfg, log, ui.Status)
+	var solvers []solver.Solver
+	if cfg.FlareSolverrURL != "" {
+		solvers = append(solvers, solver.NewFlareSolverr(cfg.FlareSolverrURL, cfg.FlareSolverrMaxTimeout, log))
+	}
+	solvers = append(solvers, rodSolver)
+	chain := solver.NewChain(log, solvers...)
+	defer chain.Close()
+	rodSolver.Preflight()
+
 	for {
 		runCtx, cancel := context.WithCancel(ctx)
 		runCancel.Store(&cancel)
@@ -88,19 +102,40 @@ func run() error {
 		throttle := backoff.NewThrottle(backoff.MaxMultiplier)
 		cnt := &counter.Counter{}
 		pool := proxypool.New(proxyEntries, cfg, log, ui.ProxyStats)
+		client := httpclient.New(cfg, log, throttle, pool, chain)
+
+		// an exit or a restart must not wait for in-flight parses: the
+		// browsers die together with the run's context, so every rod fetch
+		// in flight aborts at once and queued ones never launch. Close is
+		// idempotent — the call after queue.Run below stays harmless.
+		abortDone := make(chan struct{})
+		go func() {
+			select {
+			case <-runCtx.Done():
+				client.Close()
+			case <-abortDone:
+			}
+		}()
+
+		// the probe pins every proxy to its transport before the crawl:
+		// direct where the real page answers, a solver where only one can
+		client.Probe(runCtx, urls)
+
 		queue.Run(runCtx, urls, queue.Options{
 			Workers:  cfg.Workers,
 			DelayMin: cfg.DelayMin,
 			DelayMax: cfg.DelayMax,
 			OnlyFree: cli.free,
 			Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-			Client:   httpclient.New(cfg, log, throttle, pool),
+			Client:   client,
 			Throttle: throttle,
 			Counter:  cnt,
 			Log:      log,
 			Progress: ui,
 			Gate:     gate,
 		})
+		close(abortDone) // the run ended on its own: disarm the kill switch
+		client.Close()   // the rod browsers are run-scoped state as well
 
 		// r aborts the run either paused or after completion: erase what
 		// it left behind and crawl the same urls from the start

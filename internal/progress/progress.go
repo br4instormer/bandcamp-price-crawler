@@ -145,6 +145,29 @@ func (u *UI) Inc() {
 	}
 }
 
+// Fail records one processed URL that ended in an error — even the solver
+// chain could not fetch it: the dashboard adds a red "error" row for it.
+func (u *UI) Fail(url string) {
+	if u == nil {
+		return
+	}
+	if n := u.processed.Add(1); u.live && n <= u.total {
+		u.prog.Send(msgFail{url: url})
+	}
+}
+
+// Status shows a persistent one-line note under the proxy line — the managed
+// browser download progress, say; an empty string clears it. Like the proxy
+// line it survives a dashboard reset: the download is process-wide, not
+// run-scoped. Safe to call from any goroutine; a nil or inactive UI ignores
+// it.
+func (u *UI) Status(text string) {
+	if u == nil || !u.live || u.stopped.Load() {
+		return
+	}
+	u.prog.Send(msgStatus{text: text})
+}
+
 // ProxyStats pushes the proxy pool state to the dashboard: how many proxies
 // serve the run and how many are currently blocked for exhausting their
 // error budgets. It is safe to call from any goroutine; a nil or inactive

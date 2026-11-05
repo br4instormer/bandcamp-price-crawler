@@ -45,6 +45,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ProxyErrorBudget != 5 {
 		t.Errorf("ProxyErrorBudget = %d, want 5", cfg.ProxyErrorBudget)
 	}
+	if cfg.FlareSolverrURL != "" {
+		t.Errorf("FlareSolverrURL = %q, want empty (no solver)", cfg.FlareSolverrURL)
+	}
+	if cfg.FlareSolverrMaxTimeout != 60*time.Second {
+		t.Errorf("FlareSolverrMaxTimeout = %s, want 60s", cfg.FlareSolverrMaxTimeout)
+	}
+	if cfg.ChromePath != "" {
+		t.Errorf("ChromePath = %q, want empty (autodetect)", cfg.ChromePath)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -61,6 +70,9 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("PROGRESS", "off")
 	t.Setenv("HTTP_PROXIES", "socks5://socks5.proxies:1080,socks5://user:password@p:1080")
 	t.Setenv("PROXY_ERROR_BUDGET", "3")
+	t.Setenv("FLARESOLVERR_URL", "http://trawl.local")
+	t.Setenv("FLARESOLVERR_MAX_TIMEOUT_MS", "15000")
+	t.Setenv("CHROME_PATH", "/usr/bin/chromium")
 
 	cfg, err := Load()
 	if err != nil {
@@ -97,6 +109,15 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.ProxyErrorBudget != 3 {
 		t.Errorf("ProxyErrorBudget = %d, want 3", cfg.ProxyErrorBudget)
 	}
+	if cfg.FlareSolverrURL != "http://trawl.local" {
+		t.Errorf("FlareSolverrURL = %q, want the solver URL", cfg.FlareSolverrURL)
+	}
+	if cfg.FlareSolverrMaxTimeout != 15*time.Second {
+		t.Errorf("FlareSolverrMaxTimeout = %s, want 15s", cfg.FlareSolverrMaxTimeout)
+	}
+	if cfg.ChromePath != "/usr/bin/chromium" {
+		t.Errorf("ChromePath = %q, want the system chromium", cfg.ChromePath)
+	}
 }
 
 // TestLoadInvalidLogLevelFallsBack keeps the legacy default on garbage input
@@ -126,6 +147,9 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"no http timeout", map[string]string{"HTTP_TIMEOUT_MS": "0"}},
 		{"bad progress mode", map[string]string{"PROGRESS": "yes"}},
 		{"no proxy budget", map[string]string{"PROXY_ERROR_BUDGET": "0"}},
+		{"no solver timeout", map[string]string{"FLARESOLVERR_MAX_TIMEOUT_MS": "0"}},
+		{"bad solver url", map[string]string{"FLARESOLVERR_URL": "trawl.local"}},
+		{"ftp solver url", map[string]string{"FLARESOLVERR_URL": "ftp://trawl.local"}},
 	}
 
 	for _, tt := range tests {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -56,6 +57,16 @@ type Config struct {
 	LogLevel slog.Level
 	// Progress controls the live task table (PROGRESS: auto|on|off).
 	Progress string
+	// FlareSolverrURL is the base URL of a FlareSolverr-compatible challenge
+	// solver (FLARESOLVERR_URL); empty disables it and rod works alone.
+	FlareSolverrURL string
+	// FlareSolverrMaxTimeout bounds one FlareSolverr request
+	// (FLARESOLVERR_MAX_TIMEOUT_MS).
+	FlareSolverrMaxTimeout time.Duration
+	// ChromePath is the chrome/chromium binary the rod solver launches
+	// (CHROME_PATH). Empty means autodetect a system browser first and
+	// download the managed one only as a last resort.
+	ChromePath string
 }
 
 // Load reads optional .env files (real environment variables win) and builds
@@ -65,17 +76,20 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Workers:        envInt("CONCURENT_DOWNLOADS", 5),
-		DelayMin:       envDuration("DELAY_MIN", 300*time.Millisecond),
-		DelayMax:       envDuration("DELAY_MAX", 700*time.Millisecond),
-		Retries:        envInt("RETRIES", 50),
-		RetryBaseDelay: envDuration("RETRY_BASE_DELAY_MS", time.Second),
-		RetryMaxDelay:  envDuration("RETRY_MAX_DELAY_MS", time.Minute),
-		HTTPTimeout:    envDuration("HTTP_TIMEOUT_MS", 30*time.Second),
-		UserAgent:      envStr("USER_AGENT", DefaultUserAgent),
-		HTTPProxies:    envStr("HTTP_PROXIES", ""),
-		LogLevel:       envLevel("LOG_LEVEL", slog.LevelInfo),
-		Progress:       envStr("PROGRESS", ProgressAuto),
+		Workers:                envInt("CONCURENT_DOWNLOADS", 5),
+		DelayMin:               envDuration("DELAY_MIN", 300*time.Millisecond),
+		DelayMax:               envDuration("DELAY_MAX", 700*time.Millisecond),
+		Retries:                envInt("RETRIES", 50),
+		RetryBaseDelay:         envDuration("RETRY_BASE_DELAY_MS", time.Second),
+		RetryMaxDelay:          envDuration("RETRY_MAX_DELAY_MS", time.Minute),
+		HTTPTimeout:            envDuration("HTTP_TIMEOUT_MS", 30*time.Second),
+		UserAgent:              envStr("USER_AGENT", DefaultUserAgent),
+		HTTPProxies:            envStr("HTTP_PROXIES", ""),
+		LogLevel:               envLevel("LOG_LEVEL", slog.LevelInfo),
+		Progress:               envStr("PROGRESS", ProgressAuto),
+		FlareSolverrURL:        envStr("FLARESOLVERR_URL", ""),
+		FlareSolverrMaxTimeout: envDuration("FLARESOLVERR_MAX_TIMEOUT_MS", 60*time.Second),
+		ChromePath:             envStr("CHROME_PATH", ""),
 	}
 	cfg.MaxConcurrentRequests = envInt("MAX_CONCURRENT_REQUESTS", cfg.Workers)
 	cfg.ProxyErrorBudget = envInt("PROXY_ERROR_BUDGET", 5)
@@ -106,6 +120,14 @@ func (c *Config) validate() error {
 		return errors.New("PROXY_ERROR_BUDGET must be at least 1")
 	case c.Progress != ProgressAuto && c.Progress != ProgressOn && c.Progress != ProgressOff:
 		return fmt.Errorf("PROGRESS must be %s, %s or %s, got %q", ProgressAuto, ProgressOn, ProgressOff, c.Progress)
+	case c.FlareSolverrMaxTimeout <= 0:
+		return errors.New("FLARESOLVERR_MAX_TIMEOUT_MS must be positive")
+	}
+	if c.FlareSolverrURL != "" {
+		u, err := url.Parse(c.FlareSolverrURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("FLARESOLVERR_URL must be an http(s) URL, got %q", c.FlareSolverrURL)
+		}
 	}
 	return nil
 }

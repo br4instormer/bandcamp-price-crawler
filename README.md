@@ -32,10 +32,23 @@ Parameters are read from the environment; an optional `.env` file is loaded firs
 | `USER_AGENT` | Chrome-ish UA | `User-Agent` header |
 | `HTTP_PROXIES` | *(empty)* | Proxy pool: inline list or a path to a list file, see below |
 | `PROXY_ERROR_BUDGET` | `5` | Consecutive failed attempts through one proxy before it is blocked |
+| `FLARESOLVERR_URL` | *(empty)* | Base URL of a FlareSolverr-compatible challenge solver (e.g. `http://trawl.local`); empty = rod alone |
+| `FLARESOLVERR_MAX_TIMEOUT_MS` | `60000` | Per-request solving budget of the FlareSolverr service |
+| `CHROME_PATH` | *(empty)* | Chrome/chromium binary for the rod solver; empty = autodetect a system browser, then a lazy managed download |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `PROGRESS` | `auto` | Live task table: `auto` (on when stdout is a terminal), `on`, `off` |
 
 On HTTP 429 the retry pause grows exponentially (`RETRY_BASE_DELAY_MS * 2^attempt`, ±20% jitter, capped by `RETRY_MAX_DELAY_MS`, a larger `Retry-After` header wins) and the global pause multiplier doubles, so the pauses between all requests widen until the server recovers.
+
+### Challenge solver
+
+Bandcamp sometimes serves a *client challenge* placeholder (a 3 KB Fastly JS page) instead of the album — parsing it would produce a false "not available to download". The crawler therefore waits for the album marker (`#collectors-data[data-blob]`) before parsing:
+
+1. **Direct transport** — fetches are retried with backoff until the marker shows up.
+2. **FlareSolverr** (`FLARESOLVERR_URL`, when set) — the page is solved through a FlareSolverr-compatible service; the crawler's proxy travels with the request.
+3. **rod** — the fallback: a real headless Chromium (system binary via `CHROME_PATH`, autodetected, or lazily downloaded as a last resort with the progress shown in the dashboard). Chromium ignores proxy credentials, so authenticated proxy routes belong to FlareSolverr.
+
+A placeholder that survives the direct retries escalates to the solver chain (FlareSolverr → rod); when even rod fails, the URL is marked as a red `error` row in the dashboard. With proxies configured, a startup probe gives every proxy its own URL from the list and pins it to a transport: direct where the real page answers, a solver where only one can, blocked where nothing can. A route that degrades to a solver mid-run stays with it for the rest of the run.
 
 ### Proxies
 
@@ -67,7 +80,7 @@ make run ARGS="-f"     # show only free download albums
 ./bin/crawler --help
 ```
 
-While running in a terminal, a full-screen Bubble Tea dashboard shows a scrollable results table (every processed page with its URL and price, new rows stream in at the bottom while the view follows the tail; scroll with ↑/↓, `G` jumps back to the latest) with the overall progress bar (processed/total, elapsed, ETA) beneath it; failed fetches land in the warnings tail. When proxies are configured, the header shows `proxies: N (blocked: M)` — the pool size and how many proxies are currently blocked by the error budget. `space` pauses the crawl while it is running — a `⏸ paused` marker replaces the spinner in the header and the legend offers `space — resume`; urls not started yet wait on the gate and already in-flight ones finish, so the pause lands between urls; after every url is processed (or once a stop was requested) the key becomes inert. `r` restarts the crawl from the very beginning — the key works only while the crawl is paused or already finished, aborts the current run and resets the dashboard (counters, timer, results and warnings start over, blocked proxies unblock); mid-run the key is inert. `ctrl+c` stops the crawl gracefully. When every url is processed, a note *"✓ all sources processed"* appears under the table and the process stays alive so the results remain readable — finish with `ctrl+c`, `q` or `esc`. `PROGRESS=on|off` forces the dashboard on or off (default `auto`: enabled only when stdout is a terminal).
+While running in a terminal, a full-screen Bubble Tea dashboard shows a scrollable results table (every processed page with its URL and price, new rows stream in at the bottom while the view follows the tail; scroll with ↑/↓, `G` jumps back to the latest) with the overall progress bar (processed/total, elapsed, ETA) beneath it; failed fetches land in the warnings tail, and a URL even the solver chain could not fetch gets its own red `error` row in the table. When proxies are configured, the header shows `proxies: N (blocked: M)` — the pool size and how many proxies are currently blocked; a process-wide status line (the managed browser download progress, say) appears under it when active. `space` pauses the crawl while it is running — a `⏸ paused` marker replaces the spinner in the header and the legend offers `space — resume`; urls not started yet wait on the gate and already in-flight ones finish, so the pause lands between urls; after every url is processed (or once a stop was requested) the key becomes inert. `r` restarts the crawl from the very beginning — the key works only while the crawl is paused or already finished, aborts the current run and resets the dashboard (counters, timer, results and warnings start over, blocked proxies unblock); mid-run the key is inert. `ctrl+c` stops the crawl: in-flight urls are aborted at once — the solver browsers die together with the run's context — and the process exits without waiting for parsing; no new result rows are painted while the teardown runs. When every url is processed, a note *"✓ all sources processed"* appears under the table and the process stays alive so the results remain readable — finish with `ctrl+c`, `q` or `esc`. `PROGRESS=on|off` forces the dashboard on or off (default `auto`: enabled only when stdout is a terminal).
 
 ## SonarQube
 

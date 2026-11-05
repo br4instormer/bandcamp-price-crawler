@@ -133,6 +133,30 @@ func (p *Pool) Next() *Proxy {
 	return p.null
 }
 
+// Proxies returns every rotation slot, blocked ones included. The startup
+// probe addresses each proxy individually.
+func (p *Pool) Proxies() []*Proxy {
+	return p.proxies
+}
+
+// Entry exposes the proxy's parsed coordinates to the challenge solvers.
+func (p *Proxy) Entry() Entry {
+	return p.entry
+}
+
+// BlockProxy blocks a proxy before its error budget runs out: the startup
+// probe blocks proxies that neither the direct transport nor the solver
+// chain could serve.
+func (p *Pool) BlockProxy(proxy *Proxy) {
+	if proxy == nil || proxy == p.null {
+		return
+	}
+	if proxy.blocked.CompareAndSwap(false, true) {
+		p.log.Warn("proxy blocked: nothing could serve the probe page", "proxy", proxy.Label())
+		p.notify()
+	}
+}
+
 // Report records one attempt's outcome. A healthy attempt — a success, or a
 // status the proxy merely delivered, like an ordinary 404 — resets the
 // consecutive-error counter; anything else counts toward the budget. A

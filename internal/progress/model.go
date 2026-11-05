@@ -18,6 +18,11 @@ type (
 		url   string
 		price string
 	}
+	// msgFail marks one processed URL as errored: the row renders a red
+	// "error" instead of a price.
+	msgFail struct {
+		url string
+	}
 	msgInc struct{}
 	msgLog struct {
 		level string
@@ -29,6 +34,11 @@ type (
 		total   int
 		blocked int
 	}
+	// msgStatus shows or clears the persistent status line under the proxy
+	// line (the managed browser download progress).
+	msgStatus struct {
+		text string
+	}
 	// msgReset wipes the dashboard before a restarted crawl: the model
 	// starts over as if the run had never happened.
 	msgReset struct{}
@@ -39,8 +49,9 @@ type tickMsg time.Time
 
 // result is one processed page; rows appear only after a URL is done.
 type result struct {
-	url   string
-	price string
+	url    string
+	price  string
+	failed bool
 }
 
 const (
@@ -59,6 +70,8 @@ var (
 	doneStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
 	pauseStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	restartStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	errStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	priceStyle   = lipgloss.NewStyle().Width(priceColWidth).Align(lipgloss.Right)
 )
 
 // model is the Bubble Tea model behind the live dashboard.
@@ -71,8 +84,9 @@ type model struct {
 	logs      []string // warnings/errors only
 	processed int
 	total     int
-	proxies   int // proxy pool size; 0 hides the proxy line
-	blocked   int // proxies currently blocked by the error budget
+	proxies   int    // proxy pool size; 0 hides the proxy line
+	blocked   int    // proxies currently blocked by the error budget
+	status    string // persistent process-wide note; "" hides the line
 
 	start      time.Time
 	cancel     func()     // invoked on ctrl+c/q; stops the crawler
@@ -198,7 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case msgDone:
-		if m.restarting {
+		if m.restarting || m.stopping {
 			// the aborted run's stragglers must not repaint the view
 			return m, nil
 		}
@@ -212,8 +226,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.table.SetCursor(len(m.results) - 1)
 		}
 		m.markFinished()
+	case msgFail:
+		if m.restarting || m.stopping {
+			// the aborted run's stragglers must not repaint the view
+			return m, nil
+		}
+		follow := m.table.Cursor() >= len(m.results)-1
+		m.processed++
+		m.results = append(m.results, result{url: msg.url, failed: true})
+		m.syncRows()
+		if follow {
+			m.table.SetCursor(len(m.results) - 1)
+		}
+		m.markFinished()
 	case msgInc:
-		if m.restarting {
+		if m.restarting || m.stopping {
 			return m, nil
 		}
 		m.processed++
@@ -237,6 +264,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.total != m.proxies || msg.blocked != m.blocked {
 			m.proxies = msg.total
 			m.blocked = msg.blocked
+			m.reflow()
+		}
+	case msgStatus:
+		// like the proxy line, the status note is process-wide and outlives
+		// a per-run reset
+		if msg.text != m.status {
+			m.status = msg.text
 			m.reflow()
 		}
 	case msgReset:
@@ -284,6 +318,10 @@ func (m model) View() string {
 		b.WriteString(metaStyle.Render(fmt.Sprintf("   proxies: %d (blocked: %d)", m.proxies, m.blocked)))
 		b.WriteString("\n")
 	}
+	if m.status != "" {
+		b.WriteString(metaStyle.Render("   " + shorten(m.status, max(m.width-8, 20))))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
 	b.WriteString(m.table.View())
 	if m.finished {
@@ -299,7 +337,7 @@ func (m model) View() string {
 	case m.restarting:
 		b.WriteString(helpStyle.Render("restarting — crawling from the first url again…"))
 	case m.stopping:
-		b.WriteString(helpStyle.Render("stopping — waiting for in-flight urls…"))
+		b.WriteString(helpStyle.Render("stopping — aborting in-flight urls…"))
 	case m.finished:
 		help := "↑/↓ — scroll   ctrl+c or q — exit"
 		if m.onRestart != nil {
@@ -399,18 +437,29 @@ func (m *model) reflow() {
 	if m.proxies > 0 {
 		fixed++ // the proxy line under the title
 	}
+	if m.status != "" {
+		fixed++ // the status note under the proxy line
+	}
 	if m.finished {
 		fixed++ // the completion note under the table
 	}
 	m.table.SetHeight(max(3, m.height-logLines-fixed))
 }
 
-// syncRows rebuilds the table rows from the results, oldest first.
+// syncRows rebuilds the table rows from the results, oldest first. The price
+// cell aligns through lipgloss, so the styled red "error" keeps its width.
 func (m *model) syncRows() {
 	urlWidth := m.table.Columns()[0].Width
 	rows := make([]table.Row, len(m.results))
 	for i, r := range m.results {
-		rows[i] = table.Row{shorten(r.url, max(urlWidth-2, 8)), fmt.Sprintf("%*s", priceColWidth, r.price)}
+		price := r.price
+		if r.failed {
+			price = errStyle.Render("error")
+		}
+		rows[i] = table.Row{
+			shorten(r.url, max(urlWidth-2, 8)),
+			priceStyle.Render(price),
+		}
 	}
 	m.table.SetRows(rows)
 }

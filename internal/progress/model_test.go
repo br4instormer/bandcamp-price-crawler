@@ -552,3 +552,89 @@ func TestModelProxyLine(t *testing.T) {
 		t.Error("msgReset must keep the pool state (the fresh pool re-reports)")
 	}
 }
+
+func TestModelFailRowIsRedError(t *testing.T) {
+	m := newModel(5, func() {}, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	m = update(m, msgDone{url: "https://label.bandcamp.com/album/a", price: "$7.50"})
+	m = update(m, msgFail{url: "https://label.bandcamp.com/album/b"})
+
+	if m.processed != 2 {
+		t.Errorf("processed = %d, want 2", m.processed)
+	}
+	if len(m.results) != 2 {
+		t.Fatalf("results = %d rows, want 2: a failed url gets its own row", len(m.results))
+	}
+	last := m.results[1]
+	if last.url != "https://label.bandcamp.com/album/b" || !last.failed {
+		t.Errorf("last result = %+v, want the failed album/b", last)
+	}
+	if view := m.View(); !strings.Contains(view, "error") {
+		t.Errorf("view must render the error cell, got:\n%s", view)
+	}
+}
+
+func TestModelStatusLine(t *testing.T) {
+	m := newModel(5, func() {}, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	if m.proxies != 0 {
+		t.Fatalf("proxies = %d, want 0 in this test", m.proxies)
+	}
+
+	m = update(m, msgStatus{text: "browser download: 34%"})
+	if m.status != "browser download: 34%" {
+		t.Errorf("status = %q, want the download note", m.status)
+	}
+	if view := m.View(); !strings.Contains(view, "browser download: 34%") {
+		t.Errorf("view must show the status line, got:\n%s", view)
+	}
+
+	// the same text again must not reflow twice
+	if again := update(m, msgStatus{text: "browser download: 34%"}); again.status != m.status {
+		t.Error("a repeated status must be a no-op")
+	}
+
+	// a per-run reset keeps the process-wide status, like the proxy line
+	m = update(m, msgReset{})
+	if m.status != "browser download: 34%" {
+		t.Errorf("status after reset = %q, want it kept (process-wide)", m.status)
+	}
+
+	// an empty text clears the line
+	m = update(m, msgStatus{text: ""})
+	if m.status != "" {
+		t.Errorf("status = %q, want cleared", m.status)
+	}
+	if view := m.View(); strings.Contains(view, "browser download") {
+		t.Errorf("view must drop the cleared status line, got:\n%s", view)
+	}
+}
+
+func TestModelStoppingDropsRows(t *testing.T) {
+	canceled := false
+	m := newModel(5, func() { canceled = true }, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, msgDone{url: "https://label.bandcamp.com/album/a", price: "$7.50"})
+
+	// ctrl+c flips the model into its stopping state
+	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !m.stopping {
+		t.Fatal("ctrl+c did not start the stop")
+	}
+	if !canceled {
+		t.Error("the cancel callback did not fire")
+	}
+
+	// in-flight stragglers are frozen out: no rows, no counter movement
+	m = update(m, msgDone{url: "https://label.bandcamp.com/album/b", price: "$8"})
+	m = update(m, msgFail{url: "https://label.bandcamp.com/album/c"})
+	m = update(m, msgInc{})
+
+	if m.processed != 1 {
+		t.Errorf("processed = %d, want 1: the counter freezes while stopping", m.processed)
+	}
+	if len(m.results) != 1 {
+		t.Errorf("results = %d rows, want 1: no new rows while stopping", len(m.results))
+	}
+}

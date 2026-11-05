@@ -199,3 +199,57 @@ func TestDoThroughHTTPProxy(t *testing.T) {
 		t.Errorf("status/body = %d/%q, want 200/through the tunnel", resp.StatusCode(), resp.Body())
 	}
 }
+
+func TestProxiesReturnsEverySlot(t *testing.T) {
+	p := newPool([]*Proxy{dummyProxy("a"), dummyProxy("b")}, testConfig(5), testLogger(), nil)
+	if got := len(p.Proxies()); got != 2 {
+		t.Errorf("Proxies() len = %d, want 2", got)
+	}
+	if got := p.Proxies()[1].Label(); got != "b" {
+		t.Errorf("second slot = %q, want b", got)
+	}
+}
+
+func TestEntryExposesProxyCoordinates(t *testing.T) {
+	entry := Entry{Raw: "socks5://user:secret@h:1080", Scheme: "socks5", Host: "h", Port: "1080",
+		Username: "user", Password: "secret"}
+	p := newPool([]*Proxy{newProxy(entry, testConfig(5))}, testConfig(5), testLogger(), nil)
+
+	got := p.Proxies()[0].Entry()
+	if got != entry {
+		t.Errorf("Entry() = %+v, want the parsed coordinates", got)
+	}
+}
+
+func TestBlockProxyBlocksBeforeTheBudget(t *testing.T) {
+	onChange := 0
+	p := newPool([]*Proxy{dummyProxy("a"), dummyProxy("b")}, testConfig(5), testLogger(),
+		func(total, blocked int) { onChange++ })
+	onChange -= 1 // the build itself announces the initial stats
+
+	p.BlockProxy(p.Proxies()[0])
+	if _, blocked := p.Stats(); blocked != 1 {
+		t.Errorf("blocked = %d, want 1 right after BlockProxy", blocked)
+	}
+	if onChange != 1 {
+		t.Errorf("onChange fired %d times, want 1 (the block is announced)", onChange)
+	}
+
+	// idempotent: the second block of the same proxy stays quiet
+	p.BlockProxy(p.Proxies()[0])
+	if onChange != 1 {
+		t.Errorf("onChange fired %d times, want 1 after the repeat", onChange)
+	}
+
+	// the blocked proxy leaves the rotation
+	p.idx.Store(0)
+	if got := p.Next().Label(); got != "b" {
+		t.Errorf("Next() = %q, want b (a is blocked)", got)
+	}
+
+	// the direct connection is never blocked
+	p.BlockProxy(p.null)
+	if _, blocked := p.Stats(); blocked != 1 {
+		t.Error("the null proxy got blocked")
+	}
+}

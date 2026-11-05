@@ -19,13 +19,17 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/proxypool"
 )
 
+// albumPageTail is the one marker real album pages carry and challenge
+// placeholders lack: without it Fetch keeps retrying a page as a placeholder.
+const albumPageTail = `<script id="collectors-data" data-blob="{}"></script>`
+
 const freePage = `<div class="buyItem digital">
 	<div class="compound-button"><a class="download-link">Free Download</a></div>
-</div>`
+</div>` + albumPageTail
 
 const paidPage = `<div class="buyItem digital">
 	<div class="nobreak"><span class="base-text-color">$7.50</span></div>
-</div>`
+</div>` + albumPageTail
 
 // countingServer tracks how many requests it serves at once.
 func countingServer(t *testing.T, body string, maxSeen *atomic.Int64, hits *atomic.Int64) *httptest.Server {
@@ -65,7 +69,7 @@ func pausedQueueOptions(srv *httptest.Server, gate *Gate) Options {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil), nil),
 		Throttle: th,
 		Counter:  &counter.Counter{},
 		Log:      log,
@@ -169,7 +173,7 @@ func TestRunProcessesAllURLs(t *testing.T) {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil), nil),
 		Throttle: th,
 		Counter:  cnt,
 		Log:      log,
@@ -213,7 +217,7 @@ func TestRunRespectsRequestLimit(t *testing.T) {
 		DelayMin: time.Millisecond,
 		DelayMax: 2 * time.Millisecond,
 		Limiter:  limiter.New(limit),
-		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil)),
+		Client:   httpclient.New(cfg, log, th, proxypool.New(nil, cfg, log, nil), nil),
 		Throttle: th,
 		Counter:  cnt,
 		Log:      log,

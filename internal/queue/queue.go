@@ -3,6 +3,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -78,14 +79,18 @@ func (o Options) process(ctx context.Context, url string) {
 	o.Limiter.Release()
 	if err != nil {
 		o.Log.Warn("Cannot get " + url + " because of " + err.Error())
-		o.Progress.Inc()
+		if errors.Is(err, context.Canceled) {
+			o.Progress.Inc() // a canceled crawl is not an errored url
+		} else {
+			o.Progress.Fail(url) // even the solvers failed: an errored row, no false result
+		}
 		return
 	}
 
 	parsed, err := htmlparser.ParseCost(string(body))
 	if err != nil {
 		o.Log.Warn("Cannot parse " + url + " because of " + err.Error())
-		o.Progress.Inc()
+		o.Progress.Fail(url)
 		return
 	}
 
