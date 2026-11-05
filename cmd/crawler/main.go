@@ -4,10 +4,10 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -25,6 +25,7 @@ import (
 	"github.com/br4instormer/bandcamp-price-crawler/internal/queue"
 	"github.com/br4instormer/bandcamp-price-crawler/internal/solver"
 
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 )
 
@@ -38,7 +39,7 @@ func main() {
 func run() error {
 	cli := parseFlags()
 
-	cfg, err := config.Load()
+	cfg, err := config.Load(cli.overrides)
 	if err != nil {
 		return err
 	}
@@ -194,24 +195,117 @@ func run() error {
 	return nil
 }
 
+// cliOptions carries the parsed command line: the two legacy options plus
+// the overrides layer of the config cascade — the values of flags actually
+// passed, keyed by their environment-variable name.
 type cliOptions struct {
-	include string
-	free    bool
+	include   string
+	free      bool
+	overrides map[string]string
 }
 
-// parseFlags mirrors the yargs interface: -i/--include picks the URL file,
-// -f/--free keeps only free downloads.
-func parseFlags() cliOptions {
-	include := flag.String("i", "urls.txt", "File contains bandcamp urls")
-	includeLong := flag.String("include", "urls.txt", "File contains bandcamp urls")
-	free := flag.Bool("f", false, "Show only free download albums")
-	freeLong := flag.Bool("free", false, "Show only free download albums")
-	flag.Parse()
+// msDuration is a pflag value accepting either a bare number of
+// milliseconds — parity with the *_MS environment variables — or a Go
+// duration like 500ms or 1m30s.
+type msDuration time.Duration
 
-	if *includeLong != "urls.txt" {
-		*include = *includeLong
+func (d *msDuration) String() string { return time.Duration(*d).String() }
+func (d *msDuration) Type() string   { return "duration" }
+
+func (d *msDuration) Set(s string) error {
+	if n, err := strconv.Atoi(s); err == nil {
+		*d = msDuration(time.Duration(n) * time.Millisecond)
+		return nil
 	}
-	return cliOptions{include: *include, free: *free || *freeLong}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("want milliseconds or a Go duration like 500ms, got %q", s)
+	}
+	*d = msDuration(v)
+	return nil
+}
+
+// millis renders the value as plain milliseconds, the format the
+// DELAY_MIN-style config parsers expect.
+func (d *msDuration) millis() string {
+	return strconv.Itoa(int(time.Duration(*d) / time.Millisecond))
+}
+
+// parseFlags parses the command line with pflag. Every environment-backed
+// tunable gets a long flag whose usage names its env analogue, so --help
+// doubles as the CLI-to-env mapping table; -h/--help prints that table and
+// exits 0. Mutually exclusive sources never fight: flags actually passed
+// land in overrides and win the config cascade (CLI > .env > env > default).
+func parseFlags() cliOptions {
+	fs := pflag.NewFlagSet(os.Args[0], pflag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: crawler [flags]\n\nFlags:")
+		fmt.Fprint(os.Stderr, fs.FlagUsages())
+	}
+
+	include := fs.StringP("include", "i", "urls.txt", "File contains bandcamp urls")
+	free := fs.BoolP("free", "f", false, "Show only free download albums")
+
+	workers := fs.Int("workers", 5, "Queue workers (env: CONCURENT_DOWNLOADS)")
+	msVar := func(name string, def time.Duration, usage string) *msDuration {
+		d := msDuration(def)
+		fs.Var(&d, name, usage)
+		return &d
+	}
+	delayMin := msVar("delay-min", 300*time.Millisecond, "Min pause between requests (env: DELAY_MIN)")
+	delayMax := msVar("delay-max", 700*time.Millisecond, "Max pause between requests (env: DELAY_MAX)")
+	retries := fs.Int("retries", 50, "Retries per failed request (env: RETRIES)")
+	retryBase := msVar("retry-base-delay", time.Second, "First exponential retry pause (env: RETRY_BASE_DELAY_MS)")
+	retryMax := msVar("retry-max-delay", time.Minute, "Exponential retry pause ceiling (env: RETRY_MAX_DELAY_MS)")
+	httpTimeout := msVar("http-timeout", 30*time.Second, "Per-request timeout (env: HTTP_TIMEOUT_MS)")
+	userAgent := fs.String("user-agent", "", "Request signature; empty = built-in Chrome/65 one (env: USER_AGENT)")
+	proxies := fs.String("proxies", "", "Comma-separated proxy list or a file with one per line; empty = direct (env: HTTP_PROXIES)")
+	logLevel := fs.String("log-level", "info", "Minimum log level: debug|info|warn|error (env: LOG_LEVEL)")
+	progress := fs.String("progress", "auto", "Live task table: auto|on|off (env: PROGRESS)")
+	flareURL := fs.String("flaresolverr-url", "", "FlareSolverr base URL; empty = rod alone (env: FLARESOLVERR_URL)")
+	flareTimeout := msVar("flaresolverr-timeout", 60*time.Second, "One FlareSolverr request bound (env: FLARESOLVERR_MAX_TIMEOUT_MS)")
+	chromePath := fs.String("chrome-path", "", "chrome/chromium binary for rod; empty = autodetect (env: CHROME_PATH)")
+	maxConcurrent := fs.Int("max-concurrent-requests", 0, "HTTP requests in flight; 0 = workers (env: MAX_CONCURRENT_REQUESTS)")
+	proxyBudget := fs.Int("proxy-error-budget", 5, "Failed attempts through one proxy before the run restarts (env: PROXY_ERROR_BUDGET)")
+	proxyOnly := fs.Bool("proxy-only", false, "Refuse to crawl without a working proxy (env: PROXY_ONLY)")
+	help := fs.BoolP("help", "h", false, "Show this help and exit")
+
+	fs.Parse(os.Args[1:]) // ExitOnError: a bad flag prints usage and exits 2
+
+	if *help {
+		fmt.Println("Usage: crawler [flags]\n\nFlags:")
+		fmt.Print(fs.FlagUsages())
+		os.Exit(0)
+	}
+
+	// only flags the user actually passed enter the cascade, serialized the
+	// way the config parsers expect: durations as plain milliseconds,
+	// booleans as true/false, the rest as-is
+	overrides := make(map[string]string)
+	add := func(name, envKey, value string) {
+		if f := fs.Lookup(name); f != nil && f.Changed {
+			overrides[envKey] = value
+		}
+	}
+	add("workers", "CONCURENT_DOWNLOADS", strconv.Itoa(*workers))
+	add("delay-min", "DELAY_MIN", delayMin.millis())
+	add("delay-max", "DELAY_MAX", delayMax.millis())
+	add("retries", "RETRIES", strconv.Itoa(*retries))
+	add("retry-base-delay", "RETRY_BASE_DELAY_MS", retryBase.millis())
+	add("retry-max-delay", "RETRY_MAX_DELAY_MS", retryMax.millis())
+	add("http-timeout", "HTTP_TIMEOUT_MS", httpTimeout.millis())
+	add("user-agent", "USER_AGENT", *userAgent)
+	add("proxies", "HTTP_PROXIES", *proxies)
+	add("log-level", "LOG_LEVEL", *logLevel)
+	add("progress", "PROGRESS", *progress)
+	add("flaresolverr-url", "FLARESOLVERR_URL", *flareURL)
+	add("flaresolverr-timeout", "FLARESOLVERR_MAX_TIMEOUT_MS", flareTimeout.millis())
+	add("chrome-path", "CHROME_PATH", *chromePath)
+	add("max-concurrent-requests", "MAX_CONCURRENT_REQUESTS", strconv.Itoa(*maxConcurrent))
+	add("proxy-error-budget", "PROXY_ERROR_BUDGET", strconv.Itoa(*proxyBudget))
+	add("proxy-only", "PROXY_ONLY", strconv.FormatBool(*proxyOnly))
+
+	return cliOptions{include: *include, free: *free, overrides: overrides}
 }
 
 // readURLs loads the URL list, dropping blank lines.

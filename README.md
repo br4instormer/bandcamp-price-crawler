@@ -19,7 +19,14 @@ make coverage     # tests + coverage.out
 
 ### Configure
 
-Parameters are read from the environment; an optional `.env` file is loaded first (real environment variables always win). See `.env.example`:
+Every tunable resolves through the priority cascade — the highest layer that holds a value wins:
+
+1. **CLI flags** (highest) — only flags actually passed on the command line;
+2. **`.env` file** — an optional `.env` in the working directory (values there beat real environment variables);
+3. **environment variables** (lowest);
+4. the built-in default.
+
+`./bin/crawler --help` prints the full flag table with every env analogue and default. See `.env.example` for the environment layer:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -38,6 +45,31 @@ Parameters are read from the environment; an optional `.env` file is loaded firs
 | `CHROME_PATH` | *(empty)* | Chrome/chromium binary for the rod solver; empty = autodetect a system browser, then a lazy managed download |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `PROGRESS` | `auto` | Live task table: `auto` (on when stdout is a terminal), `on`, `off` |
+
+#### CLI flags ↔ environment
+
+Every environment-backed variable has a long flag (the usage string in `--help` names it). `SONAR_HOST_URL` / `SONAR_TOKEN` are scanner infrastructure (see [SonarQube](#sonarqube)), not crawler parameters, and have no flag. Duration flags accept both a bare number of milliseconds (parity with the `*_MS` variables) and a Go duration like `500ms` or `1m30s`.
+
+| Flag | Environment analogue | Default |
+|---|---|---|
+| `-i, --include <file>` | — | `urls.txt` |
+| `-f, --free` | — | off |
+| `--workers <n>` | `CONCURENT_DOWNLOADS` | `5` |
+| `--delay-min` / `--delay-max` | `DELAY_MIN` / `DELAY_MAX` | `300` / `700` (ms) |
+| `--max-concurrent-requests <n>` | `MAX_CONCURRENT_REQUESTS` | = workers (`0`) |
+| `--retries <n>` | `RETRIES` | `50` |
+| `--retry-base-delay` / `--retry-max-delay` | `RETRY_BASE_DELAY_MS` / `RETRY_MAX_DELAY_MS` | `1000` / `60000` (ms) |
+| `--http-timeout` | `HTTP_TIMEOUT_MS` | `30000` (ms) |
+| `--user-agent <ua>` | `USER_AGENT` | Chrome-ish UA |
+| `--proxies <list-or-file>` | `HTTP_PROXIES` | *(empty)* |
+| `--proxy-error-budget <n>` | `PROXY_ERROR_BUDGET` | `5` |
+| `--proxy-only` | `PROXY_ONLY` | off |
+| `--flaresolverr-url <url>` | `FLARESOLVERR_URL` | *(empty)* |
+| `--flaresolverr-timeout` | `FLARESOLVERR_MAX_TIMEOUT_MS` | `60000` (ms) |
+| `--chrome-path <path>` | `CHROME_PATH` | *(empty)* |
+| `--log-level <lvl>` | `LOG_LEVEL` | `info` |
+| `--progress <mode>` | `PROGRESS` | `auto` |
+| `-h, --help` | — | prints the flag table, exits 0 |
 
 On HTTP 429 the retry pause grows exponentially (`RETRY_BASE_DELAY_MS * 2^attempt`, ±20% jitter, capped by `RETRY_MAX_DELAY_MS`, a larger `Retry-After` header wins) and the global pause multiplier doubles, so the pauses between all requests widen until the server recovers.
 
@@ -73,8 +105,9 @@ A proxy without an explicit port falls back to the scheme default (80 / 443 / 10
 
 `PROXY_ONLY=true` (also `on` or `1`) forbids the direct connection: no request ever leaves the machine unproxied, and the crawl refuses to start without proxies —
 
-- `HTTP_PROXIES` empty (or holding no valid proxy) → an error is shown, nothing is parsed;
-- every proxy failing the startup probe → an error is shown, nothing is parsed;
+- `HTTP_PROXIES` empty → the run fails at once at the config stage (a clear error on stderr, before urls are read or a browser starts);
+- `HTTP_PROXIES` holding no valid proxy (e.g. a list file of only comments) → the dashboard shows the reason, nothing is parsed;
+- every proxy failing the startup probe → the dashboard shows the reason, nothing is parsed;
 - every proxy blocked mid-run (error budgets exhausted) → remaining URLs fail fast with `no working proxy left (PROXY_ONLY)` instead of leaking direct requests.
 
 In both refused cases the dashboard stays up with the reason under the table; `r` restarts the run (re-reading `HTTP_PROXIES`), `q`/`ctrl+c` quit. Any other value (`false`, `off`, `0`, unset) keeps the default mechanics: empty lists and dead proxies fall back to the direct connection.
@@ -88,7 +121,8 @@ On HTTP 429 the retry pause grows exponentially (`RETRY_BASE_DELAY_MS * 2^attemp
 ```bash
 make run ARGS="-i some/path/urls.txt"
 make run ARGS="-f"     # show only free download albums
-./bin/crawler --help
+make run ARGS="--workers 8 --delay-min 500 --proxy-only"
+./bin/crawler --help   # full flag table with env analogues and defaults
 ```
 
 While running in a terminal, a full-screen Bubble Tea dashboard shows a scrollable results table (every processed page with its URL and price, new rows stream in at the bottom while the view follows the tail; scroll with ↑/↓, `G` jumps back to the latest) with the overall progress bar (processed/total, elapsed, ETA) beneath it; failed fetches land in the warnings tail, and a URL even the solver chain could not fetch gets its own red `error` row in the table. When proxies are configured, the header shows `proxies: N (blocked: M)` — the pool size and how many proxies are currently blocked; a process-wide status line (the managed browser download progress, say) appears under it when active. `space` pauses the crawl while it is running — a `⏸ paused` marker replaces the spinner in the header and the legend offers `space — resume`; urls not started yet wait on the gate and already in-flight ones finish, so the pause lands between urls; after every url is processed (or once a stop was requested) the key becomes inert. `r` restarts the crawl from the very beginning — the key works only while the crawl is paused or already finished, aborts the current run and resets the dashboard (counters, timer, results and warnings start over, blocked proxies unblock); mid-run the key is inert. `ctrl+c` stops the crawl: in-flight urls are aborted at once — the solver browsers die together with the run's context — and the process exits without waiting for parsing; no new result rows are painted while the teardown runs. When every url is processed, a note *"✓ all sources processed"* appears under the table and the process stays alive so the results remain readable — finish with `ctrl+c`, `q` or `esc`. `PROGRESS=on|off` forces the dashboard on or off (default `auto`: enabled only when stdout is a terminal).

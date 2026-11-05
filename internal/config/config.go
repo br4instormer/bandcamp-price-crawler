@@ -1,4 +1,6 @@
-// Package config reads every crawler tunable from the environment.
+// Package config reads every crawler tunable through the priority cascade:
+// explicit CLI flags beat .env file values, which beat real environment
+// variables; unset everywhere falls back to a sane default.
 package config
 
 import (
@@ -26,8 +28,8 @@ const (
 	ProgressOff  = "off"
 )
 
-// Config holds every tunable of the crawler. Each field comes from an
-// environment variable and falls back to a sane default.
+// Config holds every tunable of the crawler. Each field resolves through the
+// cascade (CLI flag > .env > environment) and falls back to a sane default.
 type Config struct {
 	// Workers is the number of queue workers (CONCURENT_DOWNLOADS).
 	Workers int
@@ -73,32 +75,64 @@ type Config struct {
 	ChromePath string
 }
 
-// Load reads optional .env files (real environment variables win) and builds
-// the configuration, validating the result afterwards.
-func Load() (*Config, error) {
-	// .env is optional; godotenv never overrides existing variables.
-	_ = godotenv.Load()
+// sources resolves one setting through the cascade layers, highest priority
+// first: cli holds the flags explicitly passed on the command line (keyed by
+// their environment-variable name), dotEnv holds the parsed .env file, and
+// the real process environment comes last before the built-in default.
+type sources struct {
+	cli    map[string]string
+	dotEnv map[string]string
+}
+
+func (s sources) get(key string) (string, bool) {
+	if v, ok := s.cli[key]; ok {
+		return v, true
+	}
+	if v, ok := s.dotEnv[key]; ok {
+		return v, true
+	}
+	return os.LookupEnv(key)
+}
+
+// Load reads the optional .env file in the working directory and builds the
+// configuration through the cascade, validating the result afterwards. The
+// overrides map is the CLI layer — only values of flags actually passed,
+// keyed by their environment-variable name. godotenv.Read never touches the
+// process environment, so the layers stay separate until get() orders them.
+func Load(overrides map[string]string) (*Config, error) {
+	// .env is optional; a missing or malformed file is silently skipped.
+	dotEnv, _ := godotenv.Read()
+	for k, v := range dotEnv {
+		dotEnv[k] = strings.TrimSpace(v)
+	}
+	return load(dotEnv, overrides)
+}
+
+// load is Load without the file access, so tests can inject both lower
+// layers without touching the working directory.
+func load(dotEnv, overrides map[string]string) (*Config, error) {
+	src := sources{cli: overrides, dotEnv: dotEnv}
 
 	cfg := &Config{
-		Workers:                envInt("CONCURENT_DOWNLOADS", 5),
-		DelayMin:               envDuration("DELAY_MIN", 300*time.Millisecond),
-		DelayMax:               envDuration("DELAY_MAX", 700*time.Millisecond),
-		Retries:                envInt("RETRIES", 50),
-		RetryBaseDelay:         envDuration("RETRY_BASE_DELAY_MS", time.Second),
-		RetryMaxDelay:          envDuration("RETRY_MAX_DELAY_MS", time.Minute),
-		HTTPTimeout:            envDuration("HTTP_TIMEOUT_MS", 30*time.Second),
-		UserAgent:              envStr("USER_AGENT", DefaultUserAgent),
-		HTTPProxies:            envStr("HTTP_PROXIES", ""),
-		LogLevel:               envLevel("LOG_LEVEL", slog.LevelInfo),
-		Progress:               envStr("PROGRESS", ProgressAuto),
-		FlareSolverrURL:        envStr("FLARESOLVERR_URL", ""),
-		FlareSolverrMaxTimeout: envDuration("FLARESOLVERR_MAX_TIMEOUT_MS", 60*time.Second),
-		ChromePath:             envStr("CHROME_PATH", ""),
+		Workers:                resolveInt(src, "CONCURENT_DOWNLOADS", 5),
+		DelayMin:               resolveDuration(src, "DELAY_MIN", 300*time.Millisecond),
+		DelayMax:               resolveDuration(src, "DELAY_MAX", 700*time.Millisecond),
+		Retries:                resolveInt(src, "RETRIES", 50),
+		RetryBaseDelay:         resolveDuration(src, "RETRY_BASE_DELAY_MS", time.Second),
+		RetryMaxDelay:          resolveDuration(src, "RETRY_MAX_DELAY_MS", time.Minute),
+		HTTPTimeout:            resolveDuration(src, "HTTP_TIMEOUT_MS", 30*time.Second),
+		UserAgent:              resolveStr(src, "USER_AGENT", DefaultUserAgent),
+		HTTPProxies:            resolveStr(src, "HTTP_PROXIES", ""),
+		LogLevel:               resolveLevel(src, "LOG_LEVEL", slog.LevelInfo),
+		Progress:               resolveStr(src, "PROGRESS", ProgressAuto),
+		FlareSolverrURL:        resolveStr(src, "FLARESOLVERR_URL", ""),
+		FlareSolverrMaxTimeout: resolveDuration(src, "FLARESOLVERR_MAX_TIMEOUT_MS", 60*time.Second),
+		ChromePath:             resolveStr(src, "CHROME_PATH", ""),
 	}
-	cfg.MaxConcurrentRequests = envInt("MAX_CONCURRENT_REQUESTS", cfg.Workers)
-	cfg.ProxyErrorBudget = envInt("PROXY_ERROR_BUDGET", 5)
+	cfg.MaxConcurrentRequests = resolveInt(src, "MAX_CONCURRENT_REQUESTS", cfg.Workers)
+	cfg.ProxyErrorBudget = resolveInt(src, "PROXY_ERROR_BUDGET", 5)
 	// a mistyped safety switch must not silently allow direct traffic
-	proxyOnly, err := envBool("PROXY_ONLY", false)
+	proxyOnly, err := resolveBool(src, "PROXY_ONLY", false)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +162,8 @@ func (c *Config) validate() error {
 		return errors.New("USER_AGENT must not be empty")
 	case c.ProxyErrorBudget < 1:
 		return errors.New("PROXY_ERROR_BUDGET must be at least 1")
+	case c.ProxyOnly && c.HTTPProxies == "":
+		return errors.New("PROXY_ONLY forbids the direct connection, but HTTP_PROXIES is empty — set a proxy list or file, or turn PROXY_ONLY off")
 	case c.Progress != ProgressAuto && c.Progress != ProgressOn && c.Progress != ProgressOff:
 		return fmt.Errorf("PROGRESS must be %s, %s or %s, got %q", ProgressAuto, ProgressOn, ProgressOff, c.Progress)
 	case c.FlareSolverrMaxTimeout <= 0:
@@ -142,8 +178,8 @@ func (c *Config) validate() error {
 	return nil
 }
 
-func envStr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
+func resolveStr(src sources, key, def string) string {
+	if v, ok := src.get(key); ok {
 		if v = strings.TrimSpace(v); v != "" {
 			return v
 		}
@@ -151,11 +187,11 @@ func envStr(key, def string) string {
 	return def
 }
 
-// envBool reads a strict on/off switch: true|on|1 and false|off|0, any case;
-// an empty or missing variable means the default. Anything else is an error —
-// a mistyped safety switch must not fall back to a silent default.
-func envBool(key string, def bool) (bool, error) {
-	s, ok := os.LookupEnv(key)
+// resolveBool reads a strict on/off switch: true|on|1 and false|off|0, any
+// case; an empty or missing value means the default. Anything else is an
+// error — a mistyped safety switch must not fall back to a silent default.
+func resolveBool(src sources, key string, def bool) (bool, error) {
+	s, ok := src.get(key)
 	if !ok || strings.TrimSpace(s) == "" {
 		return def, nil
 	}
@@ -169,8 +205,8 @@ func envBool(key string, def bool) (bool, error) {
 	}
 }
 
-func envInt(key string, def int) int {
-	s, ok := os.LookupEnv(key)
+func resolveInt(src sources, key string, def int) int {
+	s, ok := src.get(key)
 	if !ok || s == "" {
 		return def
 	}
@@ -182,8 +218,8 @@ func envInt(key string, def int) int {
 	return n
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
-	s, ok := os.LookupEnv(key)
+func resolveDuration(src sources, key string, def time.Duration) time.Duration {
+	s, ok := src.get(key)
 	if !ok || s == "" {
 		return def
 	}
@@ -195,10 +231,10 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return time.Duration(n) * time.Millisecond
 }
 
-// envLevel parses a slog level name (DEBUG, INFO, WARN, ERROR, any case)
+// resolveLevel parses a slog level name (DEBUG, INFO, WARN, ERROR, any case)
 // via slog's own UnmarshalText.
-func envLevel(key string, def slog.Level) slog.Level {
-	s, ok := os.LookupEnv(key)
+func resolveLevel(src sources, key string, def slog.Level) slog.Level {
+	s, ok := src.get(key)
 	if !ok || s == "" {
 		return def
 	}

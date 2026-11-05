@@ -7,9 +7,9 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load()
+	cfg, err := load(nil, nil)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("load() error = %v", err)
 	}
 
 	if cfg.Workers != 5 {
@@ -59,6 +59,8 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadOverrides covers the lowest cascade layer: values set in the real
+// environment are honored when no .env or CLI layer holds the variable.
 func TestLoadOverrides(t *testing.T) {
 	t.Setenv("CONCURENT_DOWNLOADS", "12")
 	t.Setenv("MAX_CONCURRENT_REQUESTS", "3")
@@ -78,9 +80,9 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("FLARESOLVERR_MAX_TIMEOUT_MS", "15000")
 	t.Setenv("CHROME_PATH", "/usr/bin/chromium")
 
-	cfg, err := Load()
+	cfg, err := load(nil, nil)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("load() error = %v", err)
 	}
 
 	if cfg.Workers != 12 || cfg.MaxConcurrentRequests != 3 {
@@ -129,12 +131,16 @@ func TestLoadOverrides(t *testing.T) {
 
 // TestProxyOnlyValues covers every accepted spelling of the switch, any case.
 func TestProxyOnlyValues(t *testing.T) {
+	// the mode requires a proxy to route through: an empty HTTP_PROXIES is
+	// a validation error on its own, keep one at hand for the truthy cases
+	t.Setenv("HTTP_PROXIES", "socks5://proxy.example:1080")
+
 	truthy := []string{"true", "TRUE", "on", "On", "1"}
 	for _, v := range truthy {
 		t.Setenv("PROXY_ONLY", v)
-		cfg, err := Load()
+		cfg, err := load(nil, nil)
 		if err != nil {
-			t.Fatalf("Load() with PROXY_ONLY=%q error = %v", v, err)
+			t.Fatalf("load() with PROXY_ONLY=%q error = %v", v, err)
 		}
 		if !cfg.ProxyOnly {
 			t.Errorf("PROXY_ONLY=%q must turn the mode on", v)
@@ -144,9 +150,9 @@ func TestProxyOnlyValues(t *testing.T) {
 	falsy := []string{"false", "OFF", "0", "", "   "}
 	for _, v := range falsy {
 		t.Setenv("PROXY_ONLY", v)
-		cfg, err := Load()
+		cfg, err := load(nil, nil)
 		if err != nil {
-			t.Fatalf("Load() with PROXY_ONLY=%q error = %v", v, err)
+			t.Fatalf("load() with PROXY_ONLY=%q error = %v", v, err)
 		}
 		if cfg.ProxyOnly {
 			t.Errorf("PROXY_ONLY=%q must keep the mode off", v)
@@ -154,17 +160,125 @@ func TestProxyOnlyValues(t *testing.T) {
 	}
 }
 
+// TestDotEnvBeatsEnvironment pins the cascade order between the two lower
+// layers: a value from .env wins over the same variable in the real
+// environment.
+func TestDotEnvBeatsEnvironment(t *testing.T) {
+	t.Setenv("CONCURENT_DOWNLOADS", "3")
+	t.Setenv("USER_AGENT", "from-environment")
+
+	dotEnv := map[string]string{
+		"CONCURENT_DOWNLOADS": "9",
+		"USER_AGENT":          "from-dotenv",
+	}
+	cfg, err := load(dotEnv, nil)
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.Workers != 9 {
+		t.Errorf("Workers = %d, want 9 (.env beats the environment)", cfg.Workers)
+	}
+	if cfg.UserAgent != "from-dotenv" {
+		t.Errorf("UserAgent = %q, want %q (.env beats the environment)", cfg.UserAgent, "from-dotenv")
+	}
+}
+
+// TestCLIBeatsDotEnvAndEnvironment pins the full cascade: an explicitly
+// passed flag beats both the .env file and the real environment, for every
+// helper type the config parses.
+func TestCLIBeatsDotEnvAndEnvironment(t *testing.T) {
+	t.Setenv("CONCURENT_DOWNLOADS", "3")
+	t.Setenv("PROXY_ONLY", "off")
+	t.Setenv("LOG_LEVEL", "warn")
+	t.Setenv("DELAY_MIN", "100")
+
+	dotEnv := map[string]string{
+		"CONCURENT_DOWNLOADS": "9",
+		"PROXY_ONLY":          "on",
+		"LOG_LEVEL":           "debug",
+		"DELAY_MIN":           "200",
+	}
+	overrides := map[string]string{
+		"CONCURENT_DOWNLOADS": "17",
+		"PROXY_ONLY":          "true",
+		"HTTP_PROXIES":        "socks5://cli.example:1080",
+		"LOG_LEVEL":           "error",
+		"DELAY_MIN":           "400",
+	}
+	cfg, err := load(dotEnv, overrides)
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.Workers != 17 {
+		t.Errorf("Workers = %d, want 17 (the CLI flag wins)", cfg.Workers)
+	}
+	if !cfg.ProxyOnly {
+		t.Error("ProxyOnly = false, want true (the CLI flag wins)")
+	}
+	if cfg.LogLevel != slog.LevelError {
+		t.Errorf("LogLevel = %v, want ERROR (the CLI flag wins)", cfg.LogLevel)
+	}
+	if cfg.DelayMin != 400*time.Millisecond {
+		t.Errorf("DelayMin = %s, want 400ms (the CLI flag wins)", cfg.DelayMin)
+	}
+}
+
+// TestProxyOnlyStrictFromDotEnv keeps the strictness of the safety switch in
+// the .env layer too: a mistyped value is an error, not a silent default.
+func TestProxyOnlyStrictFromDotEnv(t *testing.T) {
+	dotEnv := map[string]string{"PROXY_ONLY": "yes"}
+	if _, err := load(dotEnv, nil); err == nil {
+		t.Error("load() with .env PROXY_ONLY=yes succeeded, want an error")
+	}
+}
+
+// TestProxyOnlyRequiresProxies rejects the mode without anything to route
+// through: the contradiction between the safety switch and the empty proxy
+// setting fails at the config layer, before urls are read or a browser
+// starts. Unusable (but non-empty) proxy values stay a runtime refusal.
+func TestProxyOnlyRequiresProxies(t *testing.T) {
+	t.Setenv("PROXY_ONLY", "on")
+	if _, err := load(nil, nil); err == nil {
+		t.Error("load() with PROXY_ONLY=on and empty HTTP_PROXIES succeeded, want an error")
+	}
+
+	if _, err := load(map[string]string{"PROXY_ONLY": "true"}, nil); err == nil {
+		t.Error("load() with .env PROXY_ONLY=true and empty HTTP_PROXIES succeeded, want an error")
+	}
+
+	if _, err := load(nil, map[string]string{"PROXY_ONLY": "true"}); err == nil {
+		t.Error("load() with the CLI --proxy-only and empty HTTP_PROXIES succeeded, want an error")
+	}
+
+	cfg, err := load(map[string]string{"PROXY_ONLY": "true", "HTTP_PROXIES": "socks5://proxy.example:1080"}, nil)
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if !cfg.ProxyOnly {
+		t.Error("ProxyOnly = false, want true")
+	}
+}
+
 // TestLoadInvalidLogLevelFallsBack keeps the legacy default on garbage input
-// instead of failing the run.
+// instead of failing the run — from the environment as well as from the CLI
+// layer.
 func TestLoadInvalidLogLevelFallsBack(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "verbose")
 
-	cfg, err := Load()
+	cfg, err := load(nil, nil)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, want fallback INFO", cfg.LogLevel)
+	}
+
+	cfg, err = load(nil, map[string]string{"LOG_LEVEL": "verbose"})
+	if err != nil {
+		t.Fatalf("load() error = %v", err)
+	}
+	if cfg.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel = %v, want fallback INFO for a CLI override too", cfg.LogLevel)
 	}
 }
 
@@ -192,8 +306,8 @@ func TestLoadInvalidValues(t *testing.T) {
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
-			if _, err := Load(); err == nil {
-				t.Error("Load() succeeded, want validation error")
+			if _, err := load(nil, nil); err == nil {
+				t.Error("load() succeeded, want validation error")
 			}
 		})
 	}
