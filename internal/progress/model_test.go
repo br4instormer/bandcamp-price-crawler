@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -14,7 +15,7 @@ func update(m model, msg tea.Msg) model {
 }
 
 func TestModelResultsTable(t *testing.T) {
-	m := newModel(10, func() {}, nil, nil)
+	m := newModel(10, func() {}, nil, nil, nil)
 
 	if view := m.View(); !strings.Contains(view, "starting") {
 		t.Errorf("view before WindowSizeMsg should be a placeholder, got %q", view)
@@ -68,7 +69,7 @@ func TestModelResultsTable(t *testing.T) {
 }
 
 func TestModelScrollFollow(t *testing.T) {
-	m := newModel(50, nil, nil, nil)
+	m := newModel(50, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	for i := range 20 {
@@ -110,7 +111,7 @@ func TestModelScrollFollow(t *testing.T) {
 }
 
 func TestModelInfoLogsFiltered(t *testing.T) {
-	m := newModel(5, nil, nil, nil)
+	m := newModel(5, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, msgLog{level: "INFO", line: "21:00:00 INFO  [Free download] https://x/album/a"})
@@ -133,7 +134,7 @@ func TestModelInfoLogsFiltered(t *testing.T) {
 }
 
 func TestModelWarningsTailCapped(t *testing.T) {
-	m := newModel(5, nil, nil, nil)
+	m := newModel(5, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	for i := range logTailLen + 4 {
@@ -149,7 +150,7 @@ func TestModelWarningsTailCapped(t *testing.T) {
 
 func TestModelSpaceTogglesPause(t *testing.T) {
 	var got []bool
-	m := newModel(5, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m := newModel(5, nil, func(paused bool) { got = append(got, paused) }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	// first space pauses the crawl
@@ -185,7 +186,7 @@ func TestModelSpaceTogglesPause(t *testing.T) {
 
 func TestModelPauseUnavailable(t *testing.T) {
 	var got []bool
-	m := newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m := newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	space := tea.KeyMsg{Type: tea.KeySpace}
 
@@ -206,7 +207,7 @@ func TestModelPauseUnavailable(t *testing.T) {
 	}
 
 	// stopping leaves the pause unavailable too
-	m = newModel(5, func() {}, func(paused bool) { got = append(got, paused) }, nil)
+	m = newModel(5, func() {}, func(paused bool) { got = append(got, paused) }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
 	m = update(m, space)
@@ -223,7 +224,7 @@ func TestModelPauseUnavailable(t *testing.T) {
 
 func TestModelPauseEndsWithCrawl(t *testing.T) {
 	var got []bool
-	m := newModel(2, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m := newModel(2, nil, func(paused bool) { got = append(got, paused) }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
@@ -235,7 +236,7 @@ func TestModelPauseEndsWithCrawl(t *testing.T) {
 	// the model may still be paused when the last url lands: finishing
 	// clears the pause and releases the gate
 	got = nil
-	m = newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil)
+	m = newModel(1, nil, func(paused bool) { got = append(got, paused) }, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
 	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
@@ -249,7 +250,7 @@ func TestModelPauseEndsWithCrawl(t *testing.T) {
 
 func TestModelPauseNeedsCallback(t *testing.T) {
 	// without a wired gate, space must not fake a paused state
-	m := newModel(5, nil, nil, nil)
+	m := newModel(5, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
 	if m.paused {
@@ -258,7 +259,7 @@ func TestModelPauseNeedsCallback(t *testing.T) {
 }
 
 func TestModelEtaHiddenWhilePaused(t *testing.T) {
-	m := newModel(5, nil, func(bool) {}, nil)
+	m := newModel(5, nil, func(bool) {}, nil, nil)
 	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
 	if got := m.eta(); got == "—" || got == "…" {
 		t.Errorf("running eta = %q, want an estimate", got)
@@ -274,7 +275,7 @@ func TestModelEtaHiddenWhilePaused(t *testing.T) {
 
 func TestModelCtrlC(t *testing.T) {
 	cancelled := false
-	m := newModel(2, func() { cancelled = true }, nil, nil)
+	m := newModel(2, func() { cancelled = true }, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -298,7 +299,7 @@ func TestModelCtrlC(t *testing.T) {
 
 func TestModelCompletionNoteUnderTable(t *testing.T) {
 	cancelled := false
-	m := newModel(2, func() { cancelled = true }, nil, nil)
+	m := newModel(2, func() { cancelled = true }, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	heightWhileRunning := m.table.Height()
 
@@ -346,7 +347,7 @@ func TestModelCompletionNoteUnderTable(t *testing.T) {
 }
 
 func TestModelCompletionCountsFailuresToo(t *testing.T) {
-	m := newModel(1, nil, nil, nil)
+	m := newModel(1, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 
 	m = update(m, msgInc{}) // last url failed: counted, no row
@@ -362,7 +363,7 @@ func TestModelCompletionCountsFailuresToo(t *testing.T) {
 }
 
 func TestModelURLTruncatedToColumn(t *testing.T) {
-	m := newModel(20, nil, nil, nil)
+	m := newModel(20, nil, nil, nil, nil)
 	m = update(m, tea.WindowSizeMsg{Width: 60, Height: 20}) // narrow terminal
 
 	long := "https://label.bandcamp.com/album/" + strings.Repeat("x", 80)
@@ -375,12 +376,148 @@ func TestModelURLTruncatedToColumn(t *testing.T) {
 }
 
 func TestModelInitBatchesCommands(t *testing.T) {
-	m := newModel(1, nil, nil, nil)
+	m := newModel(1, nil, nil, nil, nil)
 	cmd := m.Init()
 	if cmd == nil {
 		t.Fatal("Init() must return a command")
 	}
 	if _, ok := cmd().(tea.BatchMsg); !ok {
 		t.Errorf("Init() should return a batch, got %T", cmd())
+	}
+}
+
+func TestModelRestartKey(t *testing.T) {
+	cancels, pauses, restarts := 0, 0, 0
+	m := newModel(2,
+		func() { cancels++ },
+		func(bool) { pauses++ },
+		func() { restarts++ },
+		nil,
+	)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	r := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+
+	// mid-run r is inert: in-flight work is not rewound
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	m = update(m, r)
+	if m.restarting || restarts != 0 {
+		t.Error("r mid-run must not fire the restart callback")
+	}
+	if strings.Contains(m.View(), "restart") {
+		t.Error("running dashboard must not offer the restart key")
+	}
+
+	// once every url is handled r starts the crawl over
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/b", price: "$2.00"})
+	if !m.finished {
+		t.Fatal("finished must flip before r is tried")
+	}
+	if !strings.Contains(m.View(), "r — restart") {
+		t.Error("finished dashboard should offer the restart key")
+	}
+	m = update(m, r)
+	if !m.restarting || m.finished || restarts != 1 {
+		t.Errorf("r must fire restart and clear finished: restarting=%v finished=%v fires=%d",
+			m.restarting, m.finished, restarts)
+	}
+	if !strings.Contains(m.View(), "↻ restarting") {
+		t.Error("view should announce the restart")
+	}
+
+	// everything freezes while the restarted crawl is being prepared:
+	// repeated r, quit keys, space and stale updates are ignored
+	m = update(m, r)
+	if restarts != 1 {
+		t.Error("second r while restarting must be inert")
+	}
+	_, quit := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if quit != nil || cancels != 0 {
+		t.Error("ctrl+c while restarting must neither quit nor cancel")
+	}
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace})
+	if pauses != 0 {
+		t.Error("space while restarting must not touch the gate")
+	}
+	m = update(m, msgInc{})
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/late", price: "$3.00"})
+	m = update(m, msgLog{level: "WARN", line: "23:00:00 WARN  straggler"})
+	if m.processed != 2 || len(m.results) != 2 || len(m.logs) != 0 {
+		t.Errorf("stale updates must be frozen while restarting: processed=%d rows=%d logs=%d",
+			m.processed, len(m.results), len(m.logs))
+	}
+
+	// msgReset revives the model for the fresh run
+	m = update(m, msgReset{})
+	if m.restarting || m.finished || m.paused || m.stopping {
+		t.Error("msgReset must clear restarting/finished/paused/stopping")
+	}
+	if m.processed != 0 || len(m.results) != 0 || len(m.logs) != 0 {
+		t.Errorf("msgReset must wipe the run state: processed=%d rows=%d logs=%d",
+			m.processed, len(m.results), len(m.logs))
+	}
+	if view := m.View(); strings.Contains(view, "restarting") || strings.Contains(view, "all sources processed") {
+		t.Errorf("view after restart must start over, got %q", view)
+	}
+
+	// and the same crawl can be restarted again later
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/b", price: "$2.00"})
+	m = update(m, r)
+	if !m.restarting || restarts != 2 {
+		t.Errorf("r after a finished re-run must restart again: restarting=%v fires=%d",
+			m.restarting, restarts)
+	}
+}
+
+func TestModelRestartWhilePaused(t *testing.T) {
+	restarts := 0
+	m := newModel(5, nil, func(bool) {}, func() { restarts++ }, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	r := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+
+	// mid-run r stays inert
+	m = update(m, r)
+	if m.restarting || restarts != 0 {
+		t.Error("r mid-run must not fire the restart callback")
+	}
+
+	m = update(m, tea.KeyMsg{Type: tea.KeySpace}) // pause
+	if !m.paused {
+		t.Fatal("space must pause first")
+	}
+	if !strings.Contains(m.View(), "r — restart") {
+		t.Error("paused dashboard should offer the restart key")
+	}
+
+	m = update(m, r)
+	if !m.restarting || restarts != 1 {
+		t.Errorf("r while paused must fire restart: restarting=%v fires=%d",
+			m.restarting, restarts)
+	}
+}
+
+func TestModelRestartNeedsCallback(t *testing.T) {
+	m := newModel(1, nil, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+	m = update(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if m.restarting {
+		t.Error("r without a wired callback must be inert")
+	}
+	if strings.Contains(m.View(), "r — restart") {
+		t.Error("dashboard without the restart callback must not offer the key")
+	}
+}
+
+func TestModelResetRestartsTiming(t *testing.T) {
+	m := newModel(1, nil, nil, nil, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(m, msgDone{url: "https://x.bandcamp.com/album/a", price: "$1.00"})
+
+	// manufacture an unmistakably stale start
+	m.start = time.Now().Add(-time.Hour)
+	m = update(m, msgReset{})
+	if since := time.Since(m.start); since > time.Minute {
+		t.Errorf("start after reset is %s old, want fresh", since)
 	}
 }

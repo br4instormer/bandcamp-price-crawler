@@ -99,12 +99,16 @@ func TestNilUIIsInert(t *testing.T) {
 	u.Done("x", "$1")
 	u.Inc()
 	u.Stop()
+	u.Reset()
 	u.WaitUserExit()
 	if u.Active() {
 		t.Error("nil UI must not be active")
 	}
 	if u.Processed() != 0 || u.Elapsed() != 0 {
 		t.Error("nil UI must report zeros")
+	}
+	if u.RestartPending() {
+		t.Error("nil UI must not report restart requests")
 	}
 }
 
@@ -189,6 +193,147 @@ func TestWithPausePlumbsSpaceKey(t *testing.T) {
 	}
 	if state := seen(); state[1] {
 		t.Errorf("pause callback got %v, want [true, false]", state)
+	}
+}
+
+// TestWaitUserExitReportsRestart drives a finished dashboard: the wait ends
+// with false on quit keys and with true when r asked for a restart.
+func TestWaitUserExitReportsRestart(t *testing.T) {
+	var buf bytes.Buffer
+	u := New(ModeOn, &buf, false, 1)
+	defer u.Stop()
+	u.interactive = true // pretend stdin is a terminal so keys can arrive
+
+	u.Done("https://label.bandcamp.com/album/a", "$7.50") // the crawl is over
+
+	decided := make(chan bool, 1)
+	go func() { decided <- u.WaitUserExit() }()
+
+	// the user has not decided yet: keep waiting
+	select {
+	case v := <-decided:
+		t.Fatalf("WaitUserExit returned %v before any key", v)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// r ends the wait with a restart request
+	u.restart <- struct{}{}
+	select {
+	case v := <-decided:
+		if !v {
+			t.Error("r must end WaitUserExit with true (restart)")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("r never unblocked WaitUserExit")
+	}
+
+	// the token is consumed: the next decision waits again
+	decided2 := make(chan bool, 1)
+	go func() { decided2 <- u.WaitUserExit() }()
+	select {
+	case v := <-decided2:
+		t.Fatalf("WaitUserExit returned %v with no new key", v)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// quit keys close the dashboard and report false
+	u.prog.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	select {
+	case v := <-decided2:
+		if v {
+			t.Error("ctrl+c after completion must end WaitUserExit with false")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ctrl+c never unblocked WaitUserExit")
+	}
+}
+
+// TestRestartPendingConsumesToken checks the post-crawl restart probe: one
+// press, one true, and never a stale leftover for the next run.
+func TestRestartPendingConsumesToken(t *testing.T) {
+	var buf bytes.Buffer
+	u := New(ModeOff, &buf, true, 1)
+	if u.RestartPending() {
+		t.Error("no restart key was pressed, RestartPending must be false")
+	}
+
+	u.restart <- struct{}{} // pretend r fired
+	if !u.RestartPending() {
+		t.Error("RestartPending must report the pressed restart key")
+	}
+	if u.RestartPending() {
+		t.Error("the token was consumed; second check must be false")
+	}
+}
+
+// TestResetStartsRunOver makes sure a restarted run reports itself like the
+// first one.
+func TestResetStartsRunOver(t *testing.T) {
+	var buf bytes.Buffer
+	u := New(ModeOn, &buf, false, 5)
+	defer u.Stop()
+
+	u.Done("https://label.bandcamp.com/album/a", "$7.50")
+	u.Inc()
+	if got := u.Processed(); got != 2 {
+		t.Fatalf("Processed() = %d, want 2", got)
+	}
+
+	u.Reset()
+	if got := u.Processed(); got != 0 {
+		t.Errorf("Processed() after Reset = %d, want 0", got)
+	}
+
+	// the restarted run counts from zero again
+	u.Done("https://label.bandcamp.com/album/b", "$2.00")
+	if got := u.Processed(); got != 1 {
+		t.Errorf("Processed() after restart = %d, want 1", got)
+	}
+	if e := u.Elapsed(); e > time.Hour {
+		t.Errorf("Elapsed() = %s after Reset, want ~0", e)
+	}
+}
+
+// TestWithRestartPlumbsRKey drives a real program loop: the r key from
+// stdin emulation must reach the WithRestart callback — but only once the
+// crawl is finished or paused.
+func TestWithRestartPlumbsRKey(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	fired := 0
+	u := New(ModeOn, &buf, false, 1, WithRestart(func() {
+		mu.Lock()
+		fired++
+		mu.Unlock()
+	}))
+	defer u.Stop()
+
+	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	firedCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return fired
+	}
+
+	// mid-run: r does nothing
+	u.prog.Send(key)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if firedCount() != 0 {
+			t.Fatal("r fired the restart callback mid-run")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// once every url is processed r restarts the crawl
+	u.Done("https://label.bandcamp.com/album/a", "$7.50")
+	u.prog.Send(key)
+	deadline = time.Now().Add(3 * time.Second)
+	for firedCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("r never fired the restart callback after completion")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

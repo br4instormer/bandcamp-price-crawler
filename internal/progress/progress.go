@@ -40,6 +40,8 @@ type UI struct {
 	ready       chan struct{}
 	cancelFn    func()
 	pauseFn     func(paused bool)
+	restartFn   func()        // fired by r: the caller aborts the current run
+	restart     chan struct{} // r keys arrive here, one token per press
 }
 
 // Option customizes the UI.
@@ -60,10 +62,23 @@ func WithPause(onPause func(paused bool)) Option {
 	return func(u *UI) { u.pauseFn = onPause }
 }
 
+// WithRestart registers a callback fired when the user presses r in the
+// live dashboard to crawl the urls again from the first one: use it to
+// cancel the current run so the caller can start over. The key works only
+// while the crawl is paused or every url is already processed.
+func WithRestart(onRestart func()) Option {
+	return func(u *UI) { u.restartFn = onRestart }
+}
+
 // New builds a UI tracking total URLs. The live dashboard runs only when
 // mode forces it on, or in auto mode when isTTY reports a terminal.
 func New(mode string, out io.Writer, isTTY bool, total int, opts ...Option) *UI {
-	u := &UI{out: out, total: int64(total), start: time.Now()}
+	u := &UI{
+		out:     out,
+		total:   int64(total),
+		start:   time.Now(),
+		restart: make(chan struct{}, 1),
+	}
 	for _, opt := range opts {
 		opt(u)
 	}
@@ -83,7 +98,7 @@ func New(mode string, out io.Writer, isTTY bool, total int, opts ...Option) *UI 
 	if !u.interactive {
 		popts = append(popts, tea.WithInput(nil))
 	}
-	u.prog = tea.NewProgram(newModel(total, u.cancelFn, u.pauseFn, func() { close(u.ready) }), popts...)
+	u.prog = tea.NewProgram(newModel(total, u.cancelFn, u.pauseFn, u.restartKey, func() { close(u.ready) }), popts...)
 	u.live = true
 
 	go func() {
@@ -167,6 +182,51 @@ func (lw logWriter) Write(p []byte) (int, error) {
 	return u.out.Write(p)
 }
 
+// restartKey records one r key press and fires the user callback: a token
+// wakes RestartPending/WaitUserExit readers while the callback aborts the
+// current run so the caller can start a fresh one (a no-op once it is over).
+func (u *UI) restartKey() {
+	select {
+	case u.restart <- struct{}{}:
+	default:
+	}
+	if u.restartFn != nil {
+		u.restartFn()
+	}
+}
+
+// RestartPending reports and consumes a restart key press: it answers true
+// once per press, whichever of the two readers — this method or
+// WaitUserExit — asks first. Call it right after a crawl ended to learn the
+// user asked to run the urls again instead of stopping.
+func (u *UI) RestartPending() bool {
+	if u == nil {
+		return false
+	}
+	select {
+	case <-u.restart:
+		return true
+	default:
+		return false
+	}
+}
+
+// Reset prepares the dashboard for a crawl started over: the processed
+// count, the elapsed timer and the rendered results and warnings drop back
+// to zero, so a restarted run reports itself like the first one. Call it
+// between an ended run and the restarted one.
+func (u *UI) Reset() {
+	if u == nil {
+		return
+	}
+	u.processed.Store(0)
+	u.duration.Store(0)
+	u.start = time.Now()
+	if u.live {
+		u.prog.Send(msgReset{})
+	}
+}
+
 // Stop quits the dashboard and freezes the elapsed time. Safe to call more
 // than once.
 func (u *UI) Stop() {
@@ -199,14 +259,20 @@ func (u *UI) Elapsed() time.Duration {
 	return time.Since(u.start)
 }
 
-// WaitUserExit blocks until the user closes the live dashboard: once every
-// url is handled its quit keys (ctrl+c/q/esc) terminate the program, so the
-// results stay on screen as long as the user wants. It returns immediately
-// when nothing can capture keys — the dashboard is off or stdin is not a
-// terminal — so callers keep the previous self-terminating behaviour.
-func (u *UI) WaitUserExit() {
+// WaitUserExit blocks until the user decides what to do with the ended
+// crawl: quit keys (ctrl+c/q/esc) close the dashboard and report false, the
+// restart key r reports true so the caller can crawl the urls again. It
+// returns false immediately when nothing can capture keys — the dashboard
+// is off or stdin is not a terminal — so callers keep the previous
+// self-terminating behaviour.
+func (u *UI) WaitUserExit() bool {
 	if u == nil || !u.live || !u.interactive {
-		return
+		return false
 	}
-	<-u.done
+	select {
+	case <-u.done:
+		return false
+	case <-u.restart:
+		return true
+	}
 }

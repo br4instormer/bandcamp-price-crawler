@@ -23,6 +23,9 @@ type (
 		level string
 		line  string
 	}
+	// msgReset wipes the dashboard before a restarted crawl: the model
+	// starts over as if the run had never happened.
+	msgReset struct{}
 )
 
 // tickMsg refreshes the elapsed/ETA readouts once a second.
@@ -41,14 +44,15 @@ const (
 )
 
 var (
-	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	metaStyle   = lipgloss.NewStyle().Faint(true)
-	logStyle    = lipgloss.NewStyle().Faint(true)
-	spinStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	cursorStyle = lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color("236"))
-	helpStyle   = lipgloss.NewStyle().Faint(true)
-	doneStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
-	pauseStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	metaStyle    = lipgloss.NewStyle().Faint(true)
+	logStyle     = lipgloss.NewStyle().Faint(true)
+	spinStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	cursorStyle  = lipgloss.NewStyle().Padding(0, 1).Background(lipgloss.Color("236"))
+	helpStyle    = lipgloss.NewStyle().Faint(true)
+	doneStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
+	pauseStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
+	restartStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 )
 
 // model is the Bubble Tea model behind the live dashboard.
@@ -62,18 +66,20 @@ type model struct {
 	processed int
 	total     int
 
-	start    time.Time
-	cancel   func()     // invoked on ctrl+c/q; stops the crawler
-	onPause  func(bool) // pushes space pause/resume to the crawler gate
-	onReady  func()     // fired once the event loop runs
-	width    int
-	height   int
-	stopping bool
-	paused   bool // space pause: no new urls are dequeued by the workers
-	finished bool // every url handled: note under the table, keys exit
+	start      time.Time
+	cancel     func()     // invoked on ctrl+c/q; stops the crawler
+	onPause    func(bool) // pushes space pause/resume to the crawler gate
+	onRestart  func()     // fires r: the caller aborts the run and starts over
+	onReady    func()     // fired once the event loop runs
+	width      int
+	height     int
+	stopping   bool
+	paused     bool // space pause: no new urls are dequeued by the workers
+	restarting bool // r pressed: the view freezes until the fresh crawl lands
+	finished   bool // every url handled: note under the table, keys exit
 }
 
-func newModel(total int, cancel func(), onPause func(paused bool), onReady func()) model {
+func newModel(total int, cancel func(), onPause func(paused bool), onRestart func(), onReady func()) model {
 	tbl := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "URL", Width: urlColMin},
@@ -91,14 +97,15 @@ func newModel(total int, cancel func(), onPause func(paused bool), onReady func(
 	sp.Style = spinStyle
 
 	return model{
-		table:   tbl,
-		bar:     progress.New(progress.WithScaledGradient("#5A56E0", "#EE6FF8")),
-		spinner: sp,
-		total:   total,
-		start:   time.Now(),
-		cancel:  cancel,
-		onPause: onPause,
-		onReady: onReady,
+		table:     tbl,
+		bar:       progress.New(progress.WithScaledGradient("#5A56E0", "#EE6FF8")),
+		spinner:   sp,
+		total:     total,
+		start:     time.Now(),
+		cancel:    cancel,
+		onPause:   onPause,
+		onRestart: onRestart,
+		onReady:   onReady,
 	}
 }
 
@@ -124,6 +131,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
+			if m.restarting {
+				// too late to stop anything: the run is already being
+				// replaced, keys stay frozen until the fresh crawl lands
+				return m, nil
+			}
 			if m.finished {
 				// nothing left to cancel: these keys now close the
 				// dashboard and end the program
@@ -137,11 +149,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case " ":
 			// the pause exists only while the crawl is running: after
-			// completion or once a stop was requested space is inert
-			if m.stopping || m.finished || m.onPause == nil {
+			// completion or once a stop or restart was requested space
+			// is inert
+			if m.stopping || m.restarting || m.finished || m.onPause == nil {
 				return m, nil
 			}
 			m.setPaused(!m.paused)
+			return m, nil
+		case "r":
+			// crawl the urls again from the first one: only a finished or
+			// paused run can be replaced — in-flight work is winding down,
+			// not rewound
+			if m.restarting || m.onRestart == nil || !(m.finished || m.paused) {
+				return m, nil
+			}
+			m.restarting = true
+			m.finished = false // the completed run is being replaced
+			m.reflow()
+			m.onRestart()
 			return m, nil
 		}
 		// everything else feeds the table (scrolling)
@@ -165,6 +190,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case msgDone:
+		if m.restarting {
+			// the aborted run's stragglers must not repaint the view
+			return m, nil
+		}
 		// keep following the tail only while the cursor rests on the last
 		// row; a user scrolled up must not be yanked around
 		follow := m.table.Cursor() >= len(m.results)-1
@@ -176,9 +205,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.markFinished()
 	case msgInc:
+		if m.restarting {
+			return m, nil
+		}
 		m.processed++
 		m.markFinished()
 	case msgLog:
+		if m.restarting {
+			return m, nil
+		}
 		if msg.level == "INFO" {
 			// results already live in the table; INFO lines would duplicate
 			return m, nil
@@ -187,6 +222,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.logs) > logTailLen {
 			m.logs = m.logs[len(m.logs)-logTailLen:]
 		}
+		m.reflow()
+	case msgReset:
+		// the restarted crawl begins: drop everything the previous run
+		// left behind
+		m.results = nil
+		m.logs = nil
+		m.processed = 0
+		m.finished = false
+		m.stopping = false
+		m.paused = false
+		m.restarting = false
+		m.start = time.Now()
+		m.syncRows()
 		m.reflow()
 	}
 	return m, nil
@@ -203,9 +251,12 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	if m.paused {
+	switch {
+	case m.restarting:
+		b.WriteString(restartStyle.Render("↻ restarting"))
+	case m.paused:
 		b.WriteString(pauseStyle.Render("⏸ paused"))
-	} else if m.processed < m.total {
+	case m.processed < m.total:
 		b.WriteString(m.spinner.View() + " ")
 	}
 	b.WriteString(titleStyle.Render("bandcamp crawler"))
@@ -222,11 +273,18 @@ func (m model) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.logsView())
 	b.WriteString("\n ")
-	if m.stopping {
+	switch {
+	case m.restarting:
+		b.WriteString(helpStyle.Render("restarting — crawling from the first url again…"))
+	case m.stopping:
 		b.WriteString(helpStyle.Render("stopping — waiting for in-flight urls…"))
-	} else if m.finished {
-		b.WriteString(helpStyle.Render("↑/↓ — scroll   ctrl+c or q — exit"))
-	} else {
+	case m.finished:
+		help := "↑/↓ — scroll   ctrl+c or q — exit"
+		if m.onRestart != nil {
+			help = "↑/↓ — scroll   r — restart   ctrl+c or q — exit"
+		}
+		b.WriteString(helpStyle.Render(help))
+	default:
 		pause := "space — pause"
 		if m.paused {
 			pause = "space — resume"
@@ -234,6 +292,9 @@ func (m model) View() string {
 		help := "↑/↓ — scroll   " + pause + "   ctrl+c — stop"
 		if !m.following() {
 			help = "↑/↓ — scroll   G — latest   " + pause + "   ctrl+c — stop"
+		}
+		if m.paused && m.onRestart != nil {
+			help += "   r — restart"
 		}
 		b.WriteString(helpStyle.Render(help))
 	}

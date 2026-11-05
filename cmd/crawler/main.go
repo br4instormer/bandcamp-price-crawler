@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -49,13 +50,22 @@ func run() error {
 	defer stop()
 
 	// While the dashboard is live the logger must write through it
-	// (progress.UI.LogWriter) instead of stdout; ctrl+c in the dashboard
-	// cancels ctx via WithCancel. The space pause: the dashboard toggles
-	// the gate, workers block on it before taking the next url.
+	// (progress.UI.LogWriter) instead of stdout. The dashboard keys cancel
+	// the current run via WithCancel (both ctrl+c and r); the space pause
+	// toggles the gate, workers block on it before taking the next url;
+	// the r restart aborts the current run and the loop below starts over
+	// from the first url.
 	gate := queue.NewGate()
+	var runCancel atomic.Pointer[context.CancelFunc]
+	cancelRun := func() {
+		if c := runCancel.Load(); c != nil {
+			(*c)()
+		}
+	}
 	ui := progress.New(cfg.Progress, os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), len(urls),
-		progress.WithCancel(stop),
+		progress.WithCancel(cancelRun),
 		progress.WithPause(gate.Set),
+		progress.WithRestart(cancelRun),
 	)
 	log := logger.New(ui.LogWriter(), cfg.LogLevel)
 
@@ -65,35 +75,57 @@ func run() error {
 		return nil
 	}
 
-	throttle := backoff.NewThrottle(backoff.MaxMultiplier)
-	cnt := &counter.Counter{}
-	queue.Run(ctx, urls, queue.Options{
-		Workers:  cfg.Workers,
-		DelayMin: cfg.DelayMin,
-		DelayMax: cfg.DelayMax,
-		OnlyFree: cli.free,
-		Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-		Client:   httpclient.New(cfg, log, throttle),
-		Throttle: throttle,
-		Counter:  cnt,
-		Log:      log,
-		Progress: ui,
-		Gate:     gate,
-	})
+	for {
+		runCtx, cancel := context.WithCancel(ctx)
+		runCancel.Store(&cancel)
 
-	if cli.free && cnt.Get(cost.FreeDownload) == 0 {
-		log.Warn("No free download albums at all!")
+		// a restarted crawl starts from a clean slate: rate limiting,
+		// retries and statistics are all run-scoped state
+		throttle := backoff.NewThrottle(backoff.MaxMultiplier)
+		cnt := &counter.Counter{}
+		queue.Run(runCtx, urls, queue.Options{
+			Workers:  cfg.Workers,
+			DelayMin: cfg.DelayMin,
+			DelayMax: cfg.DelayMax,
+			OnlyFree: cli.free,
+			Limiter:  limiter.New(cfg.MaxConcurrentRequests),
+			Client:   httpclient.New(cfg, log, throttle),
+			Throttle: throttle,
+			Counter:  cnt,
+			Log:      log,
+			Progress: ui,
+			Gate:     gate,
+		})
+
+		// r aborts the run either paused or after completion: erase what
+		// it left behind and crawl the same urls from the start
+		if ui.RestartPending() {
+			gate.Resume() // the aborted run may have died paused
+			ui.Reset()
+			continue
+		}
+		if runCtx.Err() != nil {
+			break // the user stopped the crawl
+		}
+
+		if cli.free && cnt.Get(cost.FreeDownload) == 0 {
+			log.Warn("No free download albums at all!")
+		}
+
+		// do not terminate after the last url: keep the dashboard (and the
+		// process) up until the user closes it or asks to restart; a
+		// ctrl+c that cancelled the crawl took the self-terminating path
+		// above
+		if !ui.WaitUserExit() {
+			break
+		}
+		gate.Resume()
+		ui.Reset()
 	}
 
-	// do not terminate after the last url: keep the dashboard (and the
-	// process) up until the user closes it; ctrl+c that cancelled the
-	// crawl takes the old self-terminating path instead
+	// stats of the last run: earlier ones were wiped by the restarts
 	processed := ui.Processed()
 	elapsed := ui.Elapsed().Round(time.Second) // pure crawling time
-	if ctx.Err() == nil {
-		ui.WaitUserExit()
-	}
-
 	ui.Stop()
 	log.Info(fmt.Sprintf("Processed %d/%d urls in %s", processed, len(urls), elapsed))
 	return nil
