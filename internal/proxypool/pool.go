@@ -52,13 +52,16 @@ func (p *Proxy) Do(req *fasthttp.Request, resp *fasthttp.Response) error {
 // consecutive failed attempts stays blocked until the pool is recreated (a
 // run restart). When every proxy is blocked — or none are configured —
 // requests take the direct connection (the null proxy), so Next always
-// returns somewhere to send a request.
+// returns somewhere to send a request — except in proxy-only mode
+// (cfg.ProxyOnly): there the direct connection does not exist, and Next
+// reports the outage by returning nil.
 type Pool struct {
-	null     *Proxy // direct connection; never blocked, never reported
-	proxies  []*Proxy
-	budget   int
-	log      *slog.Logger
-	onChange func(total, blocked int) // pushed to the dashboard on every block
+	null      *Proxy // direct connection; never blocked, never reported
+	proxyOnly bool   // the direct connection must never serve a request
+	proxies   []*Proxy
+	budget    int
+	log       *slog.Logger
+	onChange  func(total, blocked int) // pushed to the dashboard on every block
 
 	idx atomic.Int64 // round-robin cursor, advanced once per Next call
 }
@@ -78,11 +81,12 @@ func New(entries []Entry, cfg *config.Config, log *slog.Logger, onChange func(to
 // dialers through it.
 func newPool(proxies []*Proxy, cfg *config.Config, log *slog.Logger, onChange func(total, blocked int)) *Pool {
 	p := &Pool{
-		null:     newProxy(Entry{}, cfg),
-		proxies:  proxies,
-		budget:   cfg.ProxyErrorBudget,
-		log:      log,
-		onChange: onChange,
+		null:      newProxy(Entry{}, cfg),
+		proxyOnly: cfg.ProxyOnly,
+		proxies:   proxies,
+		budget:    cfg.ProxyErrorBudget,
+		log:       log,
+		onChange:  onChange,
 	}
 	if p.onChange != nil {
 		p.onChange(p.Stats())
@@ -122,13 +126,17 @@ func newProxy(entry Entry, cfg *config.Config) *Proxy {
 
 // Next returns the proxy for one HTTP attempt: the next unblocked entry in
 // round-robin order. With every proxy blocked, or none configured, the
-// direct connection answers.
+// direct connection answers — in proxy-only mode nil comes back instead, and
+// the caller must fail the attempt rather than leak an unproxied request.
 func (p *Pool) Next() *Proxy {
 	for i := 0; i < len(p.proxies); i++ {
 		proxy := p.proxies[int((p.idx.Add(1)-1)%int64(len(p.proxies)))]
 		if !proxy.blocked.Load() {
 			return proxy
 		}
+	}
+	if p.proxyOnly {
+		return nil
 	}
 	return p.null
 }

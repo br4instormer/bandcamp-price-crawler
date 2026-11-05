@@ -201,6 +201,47 @@ func TestFetchFallsBackToDirectWhenProxyBlocked(t *testing.T) {
 	}
 }
 
+// TestFetchFailsWithoutProxyInProxyOnlyMode pins the proxy-only contract:
+// once the last proxy blocks, the fetch fails instead of leaking a direct
+// request, and the outage is not retried away.
+func TestFetchFailsWithoutProxyInProxyOnlyMode(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, albumPage)
+	}))
+	defer srv.Close()
+
+	// a closed port: every attempt through the proxy fails at once
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadHost, deadPort, _ := net.SplitHostPort(dead.Addr().String())
+	_ = dead.Close()
+
+	cfg := testConfig(5)
+	cfg.ProxyOnly = true
+	cfg.ProxyErrorBudget = 1
+	log := slog.New(slog.DiscardHandler)
+	pool := proxypool.New([]proxypool.Entry{{
+		Raw: "http://" + net.JoinHostPort(deadHost, deadPort), Scheme: "http",
+		Host: deadHost, Port: deadPort,
+	}}, cfg, log, nil)
+	c := New(cfg, log, backoff.NewThrottle(backoff.MaxMultiplier), pool, nil)
+
+	_, err = c.Fetch(t.Context(), srv.URL)
+	if !errors.Is(err, ErrNoProxy) {
+		t.Errorf("Fetch() error = %v, want ErrNoProxy", err)
+	}
+	if _, blocked := pool.Stats(); blocked != 1 {
+		t.Errorf("blocked proxies = %d, want 1", blocked)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("target hits = %d, want 0 (no direct leak)", got)
+	}
+}
+
 // fakeSolver answers Fetch with a canned result, counting its calls.
 type fakeSolver struct {
 	name  string

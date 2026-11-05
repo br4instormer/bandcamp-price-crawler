@@ -39,6 +39,12 @@ type (
 	msgStatus struct {
 		text string
 	}
+	// msgRefused marks a run that never started: proxy-only mode found no
+	// usable proxy. The reason shows under the table, the restart key works
+	// and the quit keys close the program.
+	msgRefused struct {
+		reason string
+	}
 	// msgReset wipes the dashboard before a restarted crawl: the model
 	// starts over as if the run had never happened.
 	msgReset struct{}
@@ -96,9 +102,10 @@ type model struct {
 	width      int
 	height     int
 	stopping   bool
-	paused     bool // space pause: no new urls are dequeued by the workers
-	restarting bool // r pressed: the view freezes until the fresh crawl lands
-	finished   bool // every url handled: note under the table, keys exit
+	paused     bool   // space pause: no new urls are dequeued by the workers
+	restarting bool   // r pressed: the view freezes until the fresh crawl lands
+	finished   bool   // every url handled: note under the table, keys exit
+	refused    string // the run never started: reason shown, keys like finished
 }
 
 func newModel(total int, cancel func(), onPause func(paused bool), onRestart func(), onReady func()) model {
@@ -158,7 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// replaced, keys stay frozen until the fresh crawl lands
 				return m, nil
 			}
-			if m.finished {
+			if m.finished || m.refused != "" {
 				// nothing left to cancel: these keys now close the
 				// dashboard and end the program
 				return m, tea.Quit
@@ -172,17 +179,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ":
 			// the pause exists only while the crawl is running: after
 			// completion or once a stop or restart was requested space
-			// is inert
-			if m.stopping || m.restarting || m.finished || m.onPause == nil {
+			// is inert — a refused run has nothing to pause either
+			if m.stopping || m.restarting || m.finished || m.refused != "" || m.onPause == nil {
 				return m, nil
 			}
 			m.setPaused(!m.paused)
 			return m, nil
 		case "r":
-			// crawl the urls again from the first one: only a finished or
-			// paused run can be replaced — in-flight work is winding down,
-			// not rewound
-			if m.restarting || m.onRestart == nil || !(m.finished || m.paused) {
+			// crawl the urls again from the first one: only a finished,
+			// paused or refused run can be replaced — in-flight work is
+			// winding down, not rewound
+			if m.restarting || m.onRestart == nil || !(m.finished || m.paused || m.refused != "") {
 				return m, nil
 			}
 			m.restarting = true
@@ -273,6 +280,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.text
 			m.reflow()
 		}
+	case msgRefused:
+		if m.refused != msg.reason {
+			m.refused = msg.reason
+			m.setPaused(false) // the pause is meaningless without a run
+			m.reflow()
+		}
 	case msgReset:
 		// the restarted crawl begins: drop everything the previous run
 		// left behind. The proxy line is kept — the fresh pool re-reports
@@ -284,6 +297,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stopping = false
 		m.paused = false
 		m.restarting = false
+		m.refused = ""
 		m.start = time.Now()
 		m.syncRows()
 		m.reflow()
@@ -307,7 +321,7 @@ func (m model) View() string {
 		b.WriteString(restartStyle.Render("↻ restarting"))
 	case m.paused:
 		b.WriteString(pauseStyle.Render("⏸ paused"))
-	case m.processed < m.total:
+	case m.refused == "" && m.processed < m.total:
 		b.WriteString(m.spinner.View() + " ")
 	}
 	b.WriteString(titleStyle.Render("bandcamp crawler"))
@@ -328,6 +342,10 @@ func (m model) View() string {
 		b.WriteString("\n")
 		b.WriteString(doneStyle.Render("  ✓ all sources processed"))
 	}
+	if m.refused != "" {
+		b.WriteString("\n")
+		b.WriteString(errStyle.Render("  ✗ " + m.refused))
+	}
 	b.WriteString("\n\n")
 	b.WriteString(m.bar.ViewAs(pct))
 	b.WriteString("\n\n")
@@ -338,7 +356,7 @@ func (m model) View() string {
 		b.WriteString(helpStyle.Render("restarting — crawling from the first url again…"))
 	case m.stopping:
 		b.WriteString(helpStyle.Render("stopping — aborting in-flight urls…"))
-	case m.finished:
+	case m.finished || m.refused != "":
 		help := "↑/↓ — scroll   ctrl+c or q — exit"
 		if m.onRestart != nil {
 			help = "↑/↓ — scroll   r — restart   ctrl+c or q — exit"
@@ -393,7 +411,7 @@ func (m *model) markFinished() {
 // eta estimates the remaining time from the current processing rate.
 func (m model) eta() string {
 	switch {
-	case m.total == 0 || m.processed >= m.total, m.paused:
+	case m.total == 0 || m.processed >= m.total, m.paused, m.refused != "":
 		// paused: the queue is held, so there is no meaningful estimate
 		return "—"
 	case m.processed == 0:
@@ -440,8 +458,8 @@ func (m *model) reflow() {
 	if m.status != "" {
 		fixed++ // the status note under the proxy line
 	}
-	if m.finished {
-		fixed++ // the completion note under the table
+	if m.finished || m.refused != "" {
+		fixed++ // the note under the table
 	}
 	m.table.SetHeight(max(3, m.height-logLines-fixed))
 }

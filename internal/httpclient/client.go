@@ -34,6 +34,11 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s: %d %s", e.URL, e.Status, e.Reason)
 }
 
+// ErrNoProxy marks a fetch refused in proxy-only mode: every pool proxy is
+// blocked and the direct connection does not exist. The blockage cannot lift
+// before the run restarts, so Fetch returns it without retrying.
+var ErrNoProxy = errors.New("no working proxy left (PROXY_ONLY)")
+
 // ChallengeError marks the client-challenge placeholder: a 200 response
 // whose body is the challenge script instead of album markup. To the proxy
 // and the throttle it is an ordinary success — the server answered — but
@@ -50,7 +55,9 @@ func (e *ChallengeError) Error() string {
 // Client fetches pages through the proxy pool with retry pacing and the
 // shared throttle, escalating to the solver chain when a route keeps
 // answering with the challenge placeholder. A proxy the probe or a previous
-// escalation handed to a solver skips the direct transport from then on.
+// escalation handed to a solver skips the direct transport from then on. In
+// proxy-only mode the pool never serves the direct connection: once every
+// proxy is blocked the fetches fail with ErrNoProxy instead.
 type Client struct {
 	pool     *proxypool.Pool
 	cfg      *config.Config
@@ -153,6 +160,12 @@ func (c *Client) setMode(proxy *proxypool.Proxy, name string) {
 func (c *Client) Fetch(ctx context.Context, url string) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
 		proxy := c.pool.Next()
+		if proxy == nil {
+			// proxy-only mode with every proxy blocked: there is no direct
+			// connection to fall back on, and nothing can unblock a proxy
+			// before the run restarts
+			return nil, ErrNoProxy
+		}
 
 		// a route a solver owns: direct attempts would only collect
 		// placeholders again

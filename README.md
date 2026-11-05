@@ -32,6 +32,7 @@ Parameters are read from the environment; an optional `.env` file is loaded firs
 | `USER_AGENT` | Chrome-ish UA | `User-Agent` header |
 | `HTTP_PROXIES` | *(empty)* | Proxy pool: inline list or a path to a list file, see below |
 | `PROXY_ERROR_BUDGET` | `5` | Consecutive failed attempts through one proxy before it is blocked |
+| `PROXY_ONLY` | `off` | Proxy-only mode: `true`/`on`/`1` refuses to crawl without working proxies, see below |
 | `FLARESOLVERR_URL` | *(empty)* | Base URL of a FlareSolverr-compatible challenge solver (e.g. `http://trawl.local`); empty = rod alone |
 | `FLARESOLVERR_MAX_TIMEOUT_MS` | `60000` | Per-request solving budget of the FlareSolverr service |
 | `CHROME_PATH` | *(empty)* | Chrome/chromium binary for the rod solver; empty = autodetect a system browser, then a lazy managed download |
@@ -66,7 +67,17 @@ HTTP_PROXIES=/var/tmp/proxies.txt
 HTTP_PROXIES=
 ```
 
-A proxy without an explicit port falls back to the scheme default (80 / 443 / 1080). Invalid entries are dropped, the rest still serve. Every request takes the next proxy in round-robin order; a proxy that fails `PROXY_ERROR_BUDGET` times **in a row** (transport errors, 429 or 5xx — an ordinary 404 does not count) is blocked until the run restarts (`r`). When every proxy is blocked, the crawler falls back to the direct connection. The dashboard shows `proxies: N (blocked: M)` next to the progress header whenever proxies are configured.
+A proxy without an explicit port falls back to the scheme default (80 / 443 / 1080). Invalid entries are dropped, the rest still serve. Every request takes the next proxy in round-robin order; a proxy that fails `PROXY_ERROR_BUDGET` times **in a row** (transport errors, 429 or 5xx — an ordinary 404 does not count) is blocked until the run restarts (`r`). When every proxy is blocked, the crawler falls back to the direct connection. The dashboard shows `proxies: N (blocked: M)` next to the progress header whenever proxies are configured. The proxy list is re-read on every run start, so `r` after editing the file picks the new list up.
+
+### Proxy-only mode
+
+`PROXY_ONLY=true` (also `on` or `1`) forbids the direct connection: no request ever leaves the machine unproxied, and the crawl refuses to start without proxies —
+
+- `HTTP_PROXIES` empty (or holding no valid proxy) → an error is shown, nothing is parsed;
+- every proxy failing the startup probe → an error is shown, nothing is parsed;
+- every proxy blocked mid-run (error budgets exhausted) → remaining URLs fail fast with `no working proxy left (PROXY_ONLY)` instead of leaking direct requests.
+
+In both refused cases the dashboard stays up with the reason under the table; `r` restarts the run (re-reading `HTTP_PROXIES`), `q`/`ctrl+c` quit. Any other value (`false`, `off`, `0`, unset) keeps the default mechanics: empty lists and dead proxies fall back to the direct connection.
 
 The transport is [fasthttp](https://github.com/valyala/fasthttp); every proxy gets its own connection pool.
 

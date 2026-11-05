@@ -98,6 +98,7 @@ func TestNilUIIsInert(t *testing.T) {
 	var u *UI
 	u.Done("x", "$1")
 	u.Inc()
+	u.Refused("no usable proxy")
 	u.Stop()
 	u.Reset()
 	u.WaitUserExit()

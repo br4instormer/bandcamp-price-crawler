@@ -179,6 +179,18 @@ func (u *UI) ProxyStats(total, blocked int) {
 	u.prog.Send(msgProxy{total: total, blocked: blocked})
 }
 
+// Refused puts the dashboard into the refused state: the run never started
+// (proxy-only mode found no usable proxy). The reason shows under the table,
+// the restart key works although not a single url was processed, and the
+// quit keys close the program. Safe to call from any goroutine; a nil or
+// inactive UI ignores it.
+func (u *UI) Refused(reason string) {
+	if u == nil || !u.live || u.stopped.Load() {
+		return
+	}
+	u.prog.Send(msgRefused{reason: reason})
+}
+
 // Processed returns how many URLs have been handled so far.
 func (u *UI) Processed() int64 {
 	if u == nil {

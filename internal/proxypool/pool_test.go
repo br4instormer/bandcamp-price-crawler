@@ -77,6 +77,41 @@ func TestNextWithoutProxiesIsDirect(t *testing.T) {
 	}
 }
 
+func TestNextAllBlockedProxyOnlyReturnsNil(t *testing.T) {
+	cfg := testConfig(5)
+	cfg.ProxyOnly = true
+	p := newPool([]*Proxy{dummyProxy("a"), dummyProxy("b")}, cfg, slog.New(slog.DiscardHandler), nil)
+	for _, proxy := range p.proxies {
+		proxy.blocked.Store(true)
+	}
+
+	if got := p.Next(); got != nil {
+		t.Errorf("Next() with every proxy blocked in proxy-only mode = %v, want nil", got.Label())
+	}
+}
+
+func TestNextWithoutProxiesProxyOnlyReturnsNil(t *testing.T) {
+	cfg := testConfig(5)
+	cfg.ProxyOnly = true
+	p := newPool(nil, cfg, slog.New(slog.DiscardHandler), nil)
+	if got := p.Next(); got != nil {
+		t.Errorf("Next() without proxies in proxy-only mode = %v, want nil", got.Label())
+	}
+}
+
+func TestNextProxyOnlyKeepsWorkingProxies(t *testing.T) {
+	cfg := testConfig(5)
+	cfg.ProxyOnly = true
+	p := newPool([]*Proxy{dummyProxy("a"), dummyProxy("b")}, cfg, slog.New(slog.DiscardHandler), nil)
+	p.proxies[0].blocked.Store(true)
+
+	for range 4 {
+		if got := p.Next().Label(); got != "b" {
+			t.Errorf("Next() = %q, want b (the only working proxy)", got)
+		}
+	}
+}
+
 func TestReportBlocksAfterConsecutiveErrors(t *testing.T) {
 	p := newPool([]*Proxy{dummyProxy("a")}, testConfig(3), slog.New(slog.DiscardHandler), nil)
 	proxy := p.proxies[0]

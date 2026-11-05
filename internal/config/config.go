@@ -53,6 +53,10 @@ type Config struct {
 	// ProxyErrorBudget is how many consecutive failed attempts through one
 	// proxy block it until the run restarts (PROXY_ERROR_BUDGET).
 	ProxyErrorBudget int
+	// ProxyOnly forbids the direct connection (PROXY_ONLY): the crawl starts
+	// only with at least one working proxy and fails fast once every proxy
+	// is blocked instead of leaking an unproxied request.
+	ProxyOnly bool
 	// LogLevel is the minimum log level (LOG_LEVEL: debug|info|warn|error).
 	LogLevel slog.Level
 	// Progress controls the live task table (PROGRESS: auto|on|off).
@@ -93,6 +97,12 @@ func Load() (*Config, error) {
 	}
 	cfg.MaxConcurrentRequests = envInt("MAX_CONCURRENT_REQUESTS", cfg.Workers)
 	cfg.ProxyErrorBudget = envInt("PROXY_ERROR_BUDGET", 5)
+	// a mistyped safety switch must not silently allow direct traffic
+	proxyOnly, err := envBool("PROXY_ONLY", false)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ProxyOnly = proxyOnly
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -139,6 +149,24 @@ func envStr(key, def string) string {
 		}
 	}
 	return def
+}
+
+// envBool reads a strict on/off switch: true|on|1 and false|off|0, any case;
+// an empty or missing variable means the default. Anything else is an error —
+// a mistyped safety switch must not fall back to a silent default.
+func envBool(key string, def bool) (bool, error) {
+	s, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(s) == "" {
+		return def, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "on", "1":
+		return true, nil
+	case "false", "off", "0":
+		return false, nil
+	default:
+		return def, fmt.Errorf("%s must be true|on|1 or false|off|0, got %q", key, s)
+	}
 }
 
 func envInt(key string, def int) int {

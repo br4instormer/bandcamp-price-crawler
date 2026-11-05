@@ -45,6 +45,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ProxyErrorBudget != 5 {
 		t.Errorf("ProxyErrorBudget = %d, want 5", cfg.ProxyErrorBudget)
 	}
+	if cfg.ProxyOnly {
+		t.Error("ProxyOnly = true, want false (current mechanics by default)")
+	}
 	if cfg.FlareSolverrURL != "" {
 		t.Errorf("FlareSolverrURL = %q, want empty (no solver)", cfg.FlareSolverrURL)
 	}
@@ -70,6 +73,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("PROGRESS", "off")
 	t.Setenv("HTTP_PROXIES", "socks5://socks5.proxies:1080,socks5://user:password@p:1080")
 	t.Setenv("PROXY_ERROR_BUDGET", "3")
+	t.Setenv("PROXY_ONLY", "on")
 	t.Setenv("FLARESOLVERR_URL", "http://trawl.local")
 	t.Setenv("FLARESOLVERR_MAX_TIMEOUT_MS", "15000")
 	t.Setenv("CHROME_PATH", "/usr/bin/chromium")
@@ -109,6 +113,9 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.ProxyErrorBudget != 3 {
 		t.Errorf("ProxyErrorBudget = %d, want 3", cfg.ProxyErrorBudget)
 	}
+	if !cfg.ProxyOnly {
+		t.Error("ProxyOnly = false, want true (PROXY_ONLY=on)")
+	}
 	if cfg.FlareSolverrURL != "http://trawl.local" {
 		t.Errorf("FlareSolverrURL = %q, want the solver URL", cfg.FlareSolverrURL)
 	}
@@ -117,6 +124,33 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ChromePath != "/usr/bin/chromium" {
 		t.Errorf("ChromePath = %q, want the system chromium", cfg.ChromePath)
+	}
+}
+
+// TestProxyOnlyValues covers every accepted spelling of the switch, any case.
+func TestProxyOnlyValues(t *testing.T) {
+	truthy := []string{"true", "TRUE", "on", "On", "1"}
+	for _, v := range truthy {
+		t.Setenv("PROXY_ONLY", v)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() with PROXY_ONLY=%q error = %v", v, err)
+		}
+		if !cfg.ProxyOnly {
+			t.Errorf("PROXY_ONLY=%q must turn the mode on", v)
+		}
+	}
+
+	falsy := []string{"false", "OFF", "0", "", "   "}
+	for _, v := range falsy {
+		t.Setenv("PROXY_ONLY", v)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() with PROXY_ONLY=%q error = %v", v, err)
+		}
+		if cfg.ProxyOnly {
+			t.Errorf("PROXY_ONLY=%q must keep the mode off", v)
+		}
 	}
 }
 
@@ -147,6 +181,7 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"no http timeout", map[string]string{"HTTP_TIMEOUT_MS": "0"}},
 		{"bad progress mode", map[string]string{"PROGRESS": "yes"}},
 		{"no proxy budget", map[string]string{"PROXY_ERROR_BUDGET": "0"}},
+		{"bad proxy only", map[string]string{"PROXY_ONLY": "yes"}},
 		{"no solver timeout", map[string]string{"FLARESOLVERR_MAX_TIMEOUT_MS": "0"}},
 		{"bad solver url", map[string]string{"FLARESOLVERR_URL": "trawl.local"}},
 		{"ftp solver url", map[string]string{"FLARESOLVERR_URL": "ftp://trawl.local"}},

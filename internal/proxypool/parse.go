@@ -1,7 +1,9 @@
 // Package proxypool parses the HTTP_PROXIES specification and rotates the
 // proxies round-robin, blocking the ones that exhaust their error budget.
 // A pool with no proxies — or with every proxy blocked — serves the direct
-// connection (the null proxy), so a request always has somewhere to go.
+// connection (the null proxy), so a request always has somewhere to go;
+// proxy-only mode (config.Config.ProxyOnly) drops the null proxy instead and
+// lets Next report the outage with nil.
 package proxypool
 
 import (

@@ -469,6 +469,101 @@ func TestModelRestartKey(t *testing.T) {
 	}
 }
 
+func TestModelRefusedState(t *testing.T) {
+	cancels, pauses, restarts := 0, 0, 0
+	m := newModel(3,
+		func() { cancels++ },
+		func(bool) { pauses++ },
+		func() { restarts++ },
+		nil,
+	)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	r := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+
+	// mid-run r and space stay normal before the refusal lands
+	m = update(m, r)
+	if m.restarting || restarts != 0 {
+		t.Error("r before a refusal must not fire the restart callback")
+	}
+
+	// the run is refused: the reason shows and the keys behave like finished
+	m = update(m, msgRefused{reason: "PROXY_ONLY: every proxy failed the startup probe"})
+	if m.refused == "" || m.finished {
+		t.Errorf("refused state wrong: refused=%q finished=%v", m.refused, m.finished)
+	}
+	view := m.View()
+	if !strings.Contains(view, "✗ PROXY_ONLY: every proxy failed the startup probe") {
+		t.Errorf("view missing the refusal note, got:\n%s", view)
+	}
+	if !strings.Contains(view, "r — restart") {
+		t.Error("refused dashboard should offer the restart key")
+	}
+	if strings.Contains(view, "all sources processed") {
+		t.Error("a refused run must not show the completion note")
+	}
+	if got := m.eta(); got != "—" {
+		t.Errorf("refused eta = %q, want — (nothing is running)", got)
+	}
+
+	// r works although not a single url was processed
+	m = update(m, r)
+	if !m.restarting || restarts != 1 {
+		t.Errorf("r on a refused run must fire restart: restarting=%v fires=%d", m.restarting, restarts)
+	}
+
+	// everything freezes while the fresh crawl is prepared
+	m = update(m, r)
+	if restarts != 1 {
+		t.Error("second r while restarting must be inert")
+	}
+
+	// msgReset revives the model and clears the refusal
+	m = update(m, msgReset{})
+	if m.restarting || m.refused != "" || m.finished {
+		t.Errorf("msgReset must clear restarting/refused: restarting=%v refused=%q",
+			m.restarting, m.refused)
+	}
+	if strings.Contains(m.View(), "✗") {
+		t.Error("view after reset must drop the refusal note")
+	}
+
+	// a fresh refusal after the reset works the same
+	m = update(m, msgRefused{reason: "PROXY_ONLY: HTTP_PROXIES holds no usable proxy"})
+	m = update(m, r)
+	if !m.restarting || restarts != 2 {
+		t.Errorf("r after a second refusal must restart again: restarting=%v fires=%d",
+			m.restarting, restarts)
+	}
+}
+
+func TestModelRefusedKeys(t *testing.T) {
+	cancelled := false
+	m := newModel(3, func() { cancelled = true }, nil, func() {}, nil)
+	m = update(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	space := tea.KeyMsg{Type: tea.KeySpace}
+
+	m = update(m, msgRefused{reason: "PROXY_ONLY: no usable proxy"})
+
+	// there is no crawl to pause
+	m = update(m, space)
+	if m.paused {
+		t.Error("space on a refused run must not pause")
+	}
+
+	// quit keys close the program instead of cancelling a run
+	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
+	_, cmd := m.Update(q)
+	if cmd == nil {
+		t.Fatal("q on a refused run must return a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
+	}
+	if cancelled {
+		t.Error("quit keys on a refused run must not fire the cancel callback")
+	}
+}
+
 func TestModelRestartWhilePaused(t *testing.T) {
 	restarts := 0
 	m := newModel(5, nil, func(bool) {}, func() { restarts++ }, nil)

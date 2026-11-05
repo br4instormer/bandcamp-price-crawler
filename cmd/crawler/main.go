@@ -77,9 +77,6 @@ func run() error {
 		return nil
 	}
 
-	// the proxy list parses once, the pool itself is run-scoped below
-	proxyEntries := proxypool.Parse(cfg.HTTPProxies, log)
-
 	// challenge solvers: FlareSolverr first when configured, rod as the
 	// always-present fallback. Preflight adopts a system browser or starts
 	// the lazy managed download in the background while the crawl runs.
@@ -98,7 +95,10 @@ func run() error {
 		runCancel.Store(&cancel)
 
 		// a restarted crawl starts from a clean slate: rate limiting,
-		// retries, statistics and proxy blocks are all run-scoped state
+		// retries, statistics and proxy blocks are all run-scoped state.
+		// The proxy list is re-read too, so a restart (r) picks up an
+		// edited proxy file or .env value.
+		proxyEntries := proxypool.Parse(cfg.HTTPProxies, log)
 		throttle := backoff.NewThrottle(backoff.MaxMultiplier)
 		cnt := &counter.Counter{}
 		pool := proxypool.New(proxyEntries, cfg, log, ui.ProxyStats)
@@ -118,22 +118,44 @@ func run() error {
 		}()
 
 		// the probe pins every proxy to its transport before the crawl:
-		// direct where the real page answers, a solver where only one can
-		client.Probe(runCtx, urls)
+		// direct where the real page answers, a solver where only one can.
+		// Proxy-only mode refuses to crawl without proxies: an empty list
+		// or a probe that every proxy failed means an error and no parsing
+		// this run — the dashboard stays up and r restarts it as usual.
+		refused := ""
+		if cfg.ProxyOnly {
+			switch {
+			case len(proxyEntries) == 0:
+				refused = "PROXY_ONLY: HTTP_PROXIES holds no usable proxy"
+			default:
+				client.Probe(runCtx, urls)
+				if total, blocked := pool.Stats(); blocked == total {
+					refused = "PROXY_ONLY: every proxy failed the startup probe"
+				}
+			}
+		} else {
+			client.Probe(runCtx, urls)
+		}
+		if refused != "" {
+			log.Error(refused + " — not crawling; fix HTTP_PROXIES or turn PROXY_ONLY off")
+			ui.Refused(refused)
+		}
 
-		queue.Run(runCtx, urls, queue.Options{
-			Workers:  cfg.Workers,
-			DelayMin: cfg.DelayMin,
-			DelayMax: cfg.DelayMax,
-			OnlyFree: cli.free,
-			Limiter:  limiter.New(cfg.MaxConcurrentRequests),
-			Client:   client,
-			Throttle: throttle,
-			Counter:  cnt,
-			Log:      log,
-			Progress: ui,
-			Gate:     gate,
-		})
+		if refused == "" {
+			queue.Run(runCtx, urls, queue.Options{
+				Workers:  cfg.Workers,
+				DelayMin: cfg.DelayMin,
+				DelayMax: cfg.DelayMax,
+				OnlyFree: cli.free,
+				Limiter:  limiter.New(cfg.MaxConcurrentRequests),
+				Client:   client,
+				Throttle: throttle,
+				Counter:  cnt,
+				Log:      log,
+				Progress: ui,
+				Gate:     gate,
+			})
+		}
 		close(abortDone) // the run ended on its own: disarm the kill switch
 		client.Close()   // the rod browsers are run-scoped state as well
 
@@ -148,13 +170,14 @@ func run() error {
 			break // the user stopped the crawl
 		}
 
-		if cli.free && cnt.Get(cost.FreeDownload) == 0 {
+		if refused == "" && cli.free && cnt.Get(cost.FreeDownload) == 0 {
 			log.Warn("No free download albums at all!")
 		}
 
 		// do not terminate after the last url: keep the dashboard (and the
-		// process) up until the user closes it or asks to restart; a
-		// ctrl+c that cancelled the crawl took the self-terminating path
+		// process) up until the user closes it or asks to restart; a refused
+		// crawl waits here the same way, error on screen, restart key live.
+		// a ctrl+c that cancelled the crawl took the self-terminating path
 		// above
 		if !ui.WaitUserExit() {
 			break
